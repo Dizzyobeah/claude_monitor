@@ -28,8 +28,8 @@ void SessionStore::upsert(const char* sid, SessionState state, const char* label
         idx = findEmpty();
         if (idx < 0) return; // Full, ignore
         _sessions[idx].active = true;
-        strncpy(_sessions[idx].sid, sid, 5);
-        _sessions[idx].sid[5] = '\0';
+        strncpy(_sessions[idx].sid, sid, sizeof(_sessions[idx].sid) - 1);
+        _sessions[idx].sid[sizeof(_sessions[idx].sid) - 1] = '\0';
         recount();
     }
 
@@ -40,8 +40,8 @@ void SessionStore::upsert(const char* sid, SessionState state, const char* label
     _sessions[idx].state = state;
     _sessions[idx].lastUpdate = millis();
     if (label && label[0]) {
-        strncpy(_sessions[idx].label, label, 20);
-        _sessions[idx].label[20] = '\0';
+        strncpy(_sessions[idx].label, label, sizeof(_sessions[idx].label) - 1);
+        _sessions[idx].label[sizeof(_sessions[idx].label) - 1] = '\0';
     }
 
     // Auto-switch to sessions needing attention

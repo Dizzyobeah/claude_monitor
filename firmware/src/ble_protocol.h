@@ -27,7 +27,7 @@ bool stateNeedsAttention(SessionState state);
 
 // Parsed incoming command
 struct Command {
-    enum Type : uint8_t { NONE, STATE, REMOVE, PING, CONFIG };
+    enum Type : uint8_t { NONE, STATE, REMOVE, PING, CONFIG, OTA_BEGIN, OTA_END };
     Type type = NONE;
     char sid[6]    = {0};
     SessionState state = SessionState::IDLE;
@@ -35,6 +35,8 @@ struct Command {
     uint8_t idx    = 0;
     uint8_t total  = 0;
     uint8_t brightness = 255;
+    uint8_t theme = 0xFF;  // 0xFF = no change; 0-2 = theme ID
+    uint32_t otaSize = 0;  // firmware size for OTA_BEGIN
 };
 
 // BLE UUIDs for Claude Monitor service
@@ -54,11 +56,15 @@ public:
     void sendReady();
 
     bool isConnected() const { return _connected; }
+    bool isPasskeyActive() const { return _passkeyActive; }
+    uint32_t getPasskey() const { return _displayPasskey; }
 
     // Called by BLE callbacks (friend access)
     void _onConnect();
     void _onDisconnect();
     void _onWrite(const uint8_t* data, size_t length);
+
+    friend class SecurityCallbacks;
 
 private:
     BLEServer* _server = nullptr;
@@ -75,6 +81,11 @@ private:
     bool _connected = false;
     bool _justConnected = false;
     bool _advertising = false;  // tracks whether BLE advertising is active
+
+    // Passkey display: set by security callback, cleared after pairing completes.
+    // When non-zero, the display should show this 6-digit passkey for the user.
+    volatile uint32_t _displayPasskey = 0;
+    volatile bool _passkeyActive = false;
 
     // Queue for incoming raw BLE data (BLE callback runs on core 0).
     // Protected by _rxMux spinlock — safe across the two ESP32 cores.
