@@ -26,3 +26,4 @@ daemon/claude_monitor/__pycache__/
 
 # Claude
 .claude/agent-memory/
+.claude/settings.local.json
