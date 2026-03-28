@@ -297,14 +297,13 @@ class TestSendFullState:
 class TestHousekeepingLoop:
     @pytest.mark.asyncio
     async def test_loop_stops_when_tracker_is_idle(self):
-        """After all sessions end, _housekeeping_loop cancels all other tasks and returns."""
+        """After all sessions end, _housekeeping_loop sets _shutting_down and returns."""
         daemon = make_daemon()
         daemon.tracker.update_session("s1", "SessionStart", {})
         # Force the session fully removed so is_idle becomes True
         daemon.tracker._remove_session("s1")
         assert daemon.tracker.is_idle
-
-        cancelled_tasks: list = []
+        assert not daemon._shutting_down
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             call_count = 0
@@ -317,23 +316,11 @@ class TestHousekeepingLoop:
 
             mock_sleep.side_effect = sleep_side_effect
 
-            with (
-                patch("asyncio.all_tasks") as mock_all_tasks,
-                patch("asyncio.current_task") as mock_current_task,
-            ):
-                # Simulate two tasks: the current one and a sibling
-                current = MagicMock(name="current_task")
-                sibling = MagicMock(name="sibling_task")
-                mock_current_task.return_value = current
-                mock_all_tasks.return_value = [current, sibling]
+            # Should return cleanly (not raise CancelledError)
+            await daemon._housekeeping_loop()
 
-                # Should return cleanly (not raise CancelledError)
-                await daemon._housekeeping_loop()
-
-                # The sibling task should have been cancelled
-                sibling.cancel.assert_called_once()
-                # The current task should NOT have been cancelled
-                current.cancel.assert_not_called()
+            # The daemon should be flagged for shutdown
+            assert daemon._shutting_down
 
     @pytest.mark.asyncio
     async def test_loop_does_not_stop_on_cold_start(self):

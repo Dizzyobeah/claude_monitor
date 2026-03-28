@@ -95,9 +95,8 @@ class TestUpdateSession:
     def test_label_for_root_cwd(self):
         t = make_tracker()
         t.update_session("s1", "SessionStart", {"cwd": "/"})
-        # os.path.basename("/") returns "" — should get "unknown" or ""
-        # Currently returns "" which is acceptable (root is an edge case)
-        assert t.sessions["s1"].label == ""
+        # os.path.basename("/") returns "" — now falls back to "unknown"
+        assert t.sessions["s1"].label == "unknown"
 
     def test_label_exactly_20_chars_not_truncated(self):
         t = make_tracker()

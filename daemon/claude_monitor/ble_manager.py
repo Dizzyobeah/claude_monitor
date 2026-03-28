@@ -188,8 +188,8 @@ class BleManager:
         # Wait until the OS signals a disconnect OR a send error forces one
         await asyncio.wait(
             [
-                asyncio.ensure_future(disconnect_event.wait()),
-                asyncio.ensure_future(self._force_disconnect.wait()),
+                asyncio.create_task(disconnect_event.wait()),
+                asyncio.create_task(self._force_disconnect.wait()),
             ],
             return_when=asyncio.FIRST_COMPLETED,
         )
