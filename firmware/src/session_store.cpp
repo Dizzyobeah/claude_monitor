@@ -66,6 +66,11 @@ void SessionStore::pruneStale(uint32_t now) {
         if (_sessions[i].active && (now - _sessions[i].lastUpdate) > STALE_TIMEOUT_MS) {
             _sessions[i] = Session{};
             _stateChanged = true;
+            // If the display was pointing at this (now-dead) slot, move on —
+            // same pattern as remove().
+            if (_displayIdx == (uint8_t)i) {
+                cycleNext();
+            }
         }
     }
     recount();
@@ -87,17 +92,36 @@ Session* SessionStore::getDisplayed() {
 }
 
 Session* SessionStore::getPriority() {
+    // Return the most recently updated session that needs attention,
+    // not just the first one in slot order.
+    int bestIdx = -1;
+    uint32_t bestTime = 0;
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (_sessions[i].active && stateNeedsAttention(_sessions[i].state)) {
-            return &_sessions[i];
+            if (bestIdx < 0 || _sessions[i].lastUpdate > bestTime) {
+                bestIdx = i;
+                bestTime = _sessions[i].lastUpdate;
+            }
         }
     }
-    return nullptr;
+    return bestIdx >= 0 ? &_sessions[bestIdx] : nullptr;
 }
 
 const char* SessionStore::getDisplayedSid() {
     Session* s = getDisplayed();
     return s ? s->sid : "";
+}
+
+uint8_t SessionStore::displayRank() const {
+    // Count how many active sessions come before _displayIdx in slot order.
+    // This gives the 0-based rank used for dot indicators, independent of
+    // how sparse the backing array is.
+    uint8_t rank = 0;
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (i == (int)_displayIdx) break;
+        if (_sessions[i].active) rank++;
+    }
+    return rank;
 }
 
 void SessionStore::cycleNext() {

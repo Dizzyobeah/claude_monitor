@@ -79,6 +79,5 @@ public:
 static constexpr int PIN_LED_R = 4;
 static constexpr int PIN_LED_G = 16;
 static constexpr int PIN_LED_B = 17;
-static constexpr int PIN_SPEAKER = 26;
 static constexpr int SCREEN_W = 240;
 static constexpr int SCREEN_H = 320;

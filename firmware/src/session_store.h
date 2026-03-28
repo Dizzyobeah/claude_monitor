@@ -1,6 +1,6 @@
 #pragma once
 
-#include "serial_protocol.h"
+#include "ble_protocol.h"
 
 static constexpr uint8_t MAX_SESSIONS = 8;
 static constexpr uint32_t CAROUSEL_INTERVAL_MS = 5000;
@@ -28,7 +28,10 @@ public:
     void update(uint32_t now);        // Auto-carousel logic
 
     uint8_t count() const { return _count; }
-    uint8_t displayIndex() const { return _displayIdx; }
+    // Rank (0-based position among active sessions) of the currently displayed
+    // session.  Use this for dot indicators — NOT the raw slot index which may
+    // differ when sessions are sparse in the backing array.
+    uint8_t displayRank() const;
     bool stateChanged() const { return _stateChanged; }
     void clearStateChanged() { _stateChanged = false; }
 

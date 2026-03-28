@@ -5,26 +5,34 @@ static constexpr uint32_t FRAME_INTERVAL_MS = 33; // ~30 FPS
 void DisplayManager::begin(LGFX* lcd) {
     _lcd = lcd;
     _lcd->init();
-    _lcd->setRotation(0);  // Portrait
+    _lcd->setRotation(2);  // Portrait, 180° rotated
     _lcd->setBrightness(200);
     _lcd->fillScreen(Colors::BG_DARK);
 
-    _canvas.createSprite(SCREEN_W, SCREEN_H);
-    _canvas.setSwapBytes(true);
+    // Allocate animation-zone sprite for flicker-free animation rendering.
+    // Size: 240 x ANIM_H (240px) x 16-bit = 115,200 bytes.
+    // Footer (80px) is drawn directly to _lcd; it barely changes frame-to-frame.
+    Serial.printf("[Display] Free heap before sprite alloc: %u bytes\n", (unsigned)ESP.getFreeHeap());
+    _canvas = new LGFX_Sprite(_lcd);
+    _canvas->setColorDepth(16);
+    void* buf = _canvas->createSprite(SCREEN_W, ANIM_H);
+    Serial.printf("[Display] Free heap after  sprite alloc: %u bytes\n", (unsigned)ESP.getFreeHeap());
+
+    if (!buf) {
+        Serial.println("[Display] ERROR: sprite allocation failed — not enough heap!");
+        delete _canvas;
+        _canvas = nullptr;
+    } else {
+        Serial.printf("[Display] Sprite OK (%dx%d 16-bit, %u bytes)\n",
+                      SCREEN_W, ANIM_H, (unsigned)(SCREEN_W * ANIM_H * 2));
+        _canvas->fillScreen(Colors::BG_DARK);
+    }
 
     _lastFrameTime = millis();
 }
 
-Animation* DisplayManager::animForState(SessionState state) {
-    switch (state) {
-        case SessionState::IDLE:         return &_idleAnim;
-        case SessionState::THINKING:     return &_thinkingAnim;
-        case SessionState::TOOL_USE:     return &_toolUseAnim;
-        case SessionState::PERMISSION:   return &_permissionAnim;
-        case SessionState::INPUT_NEEDED: return &_inputAnim;
-        case SessionState::ERROR:        return &_errorAnim;
-        default:                         return &_idleAnim;
-    }
+Animation* DisplayManager::animForState() {
+    return &_clawdAnim;
 }
 
 void DisplayManager::update(uint32_t now, SessionStore* sessions, bool bleConnected) {
@@ -32,179 +40,228 @@ void DisplayManager::update(uint32_t now, SessionStore* sessions, bool bleConnec
     uint32_t elapsed = now - _lastFrameTime;
     _lastFrameTime = now;
 
-    _canvas.fillSprite(Colors::BG_DARK);
-
-    // Not connected to daemon
+    // --- NOT CONNECTED: draw full-screen waiting screen only on transition ---
     if (!bleConnected) {
+        _idlePhase += elapsed;
+        if (_lastIdleScreen != IdleScreen::WAITING_BLE) {
+            _lcd->fillScreen(Colors::BG_DARK);
+            _lastIdleScreen = IdleScreen::WAITING_BLE;
+            _lastFooterState = SessionState::DISCONNECTED;  // force footer redraw on reconnect
+        }
         drawWaitingForBle();
-        _canvas.pushSprite(0, 0);
         return;
     }
 
     Session* displayed = sessions->getDisplayed();
 
+    // --- NO SESSIONS: draw full-screen idle screen only on transition ---
     if (!displayed) {
+        _idlePhase += elapsed;
+        if (_lastIdleScreen != IdleScreen::NO_SESSIONS) {
+            _lcd->fillScreen(Colors::BG_DARK);
+            _lastIdleScreen = IdleScreen::NO_SESSIONS;
+            _lastFooterState = SessionState::DISCONNECTED;  // force footer redraw when session appears
+        }
         drawNoSessions();
-        _canvas.pushSprite(0, 0);
         return;
     }
+
+    // --- ACTIVE SESSION: animated zone + footer ---
+
+    // On the first active-session frame after an idle screen, clear the full
+    // animation zone so rows outside ANIM_DIRTY_Y0..Y1 don't retain idle pixels
+    // (those rows are never included in the partial pushSprite band).
+    if (_lastIdleScreen != IdleScreen::NONE) {
+        _lcd->fillRect(0, HEADER_H, SCREEN_W, ANIM_H, Colors::BG_DARK);
+    }
+
+    // Clear idle screen tracker so we re-fill on next disconnect/empty
+    _lastIdleScreen = IdleScreen::NONE;
+    _idlePhase = 0;
 
     // Switch animation if state changed
     SessionState newState = displayed->state;
     if (newState != _currentState) {
         _currentState = newState;
-        Animation* anim = animForState(_currentState);
-        if (anim) anim->begin();
+        _clawdAnim.setState(_currentState);
+        _clawdAnim.begin();
+        _animDirty = true;  // state change always requires a redraw
     }
 
-    drawHeader(displayed, sessions->count(), sessions->displayIndex(), bleConnected);
-
-    Animation* anim = animForState(_currentState);
+    // 1. Animation zone: draw into sprite, push in one SPI burst — zero flicker.
+    //    Skip the push when the animation reports no visual change to save ~15ms SPI.
+    Animation* anim = animForState();
     if (anim) {
         anim->update(elapsed);
-        anim->draw(&_canvas, 0, HEADER_H, SCREEN_W, ANIM_H);
-    }
+        _animDirty = _clawdAnim.isDirty();
 
-    drawFooter(displayed);
-
-    _canvas.pushSprite(0, 0);
-}
-
-void DisplayManager::drawHeader(Session* session, uint8_t count, uint8_t displayIdx, bool bleConnected) {
-    _canvas.fillRect(0, 0, SCREEN_W, HEADER_H, Colors::BG_PANEL);
-
-    // Session label
-    _canvas.setTextColor(Colors::TEXT_PRIMARY);
-    _canvas.setTextSize(2);
-    _canvas.setTextDatum(lgfx::middle_left);
-    _canvas.drawString(session->label, 8, HEADER_H / 2);
-
-    // Session count dots (right side, leave room for BLE icon)
-    if (count > 1) {
-        int16_t dotStartX = SCREEN_W - 24 - (count * 10);
-        int16_t dotY = HEADER_H / 2;
-        for (uint8_t slotIdx = 0; slotIdx < count; slotIdx++) {
-            if (slotIdx == displayIdx) {
-                _canvas.fillCircle(dotStartX + slotIdx * 10, dotY, 4, Colors::CLAUDE_ORANGE);
+        if (_animDirty) {
+            if (_canvas) {
+                // Sprite path: compose frame entirely off-screen, then push in one SPI burst.
+                // fillScreen + draw happen in sprite RAM (no SPI), so the LCD never sees
+                // a blank intermediate frame — eliminates flicker.
+                _canvas->fillScreen(Colors::BG_DARK);
+                // Coordinates are sprite-relative: origin (0,0) = top-left of animation zone
+                anim->draw(_canvas, 0, 0, SCREEN_W, ANIM_H);
+                // Push only the rows that contain the character and decorations.
+                // Pushing 165 rows instead of 240 cuts SPI time from ~15ms to ~10ms,
+                // narrowing the tearing window where the panel scan overtakes the write.
+                // LovyanGFX's pushSprite has no source-rect overload; use pushImage on
+                // the LCD with a pointer into the sprite's pixel buffer instead.
+                static constexpr int16_t BAND_H = ANIM_DIRTY_Y1 - ANIM_DIRTY_Y0;
+                const uint16_t* buf = reinterpret_cast<const uint16_t*>(_canvas->getBuffer());
+                _lcd->startWrite();
+                _lcd->pushImage(0, HEADER_H + ANIM_DIRTY_Y0, SCREEN_W, BAND_H,
+                                buf + ANIM_DIRTY_Y0 * SCREEN_W);
+                _lcd->endWrite();
             } else {
-                _canvas.fillCircle(dotStartX + slotIdx * 10, dotY, 3, Colors::TEXT_DIM);
+                // Fallback: no sprite (OOM) — draw directly to LCD (may flicker slightly)
+                _lcd->fillRect(0, HEADER_H, SCREEN_W, ANIM_H, Colors::BG_DARK);
+                anim->draw(_lcd, 0, HEADER_H, SCREEN_W, ANIM_H);
             }
         }
     }
 
-    // BLE indicator (top right)
-    int16_t bx = SCREEN_W - 12;
-    int16_t by = HEADER_H / 2;
-    uint16_t bleColor = bleConnected ? Colors::CYAN_INFO : Colors::TEXT_DIM;
-    // Simple Bluetooth rune shape
-    _canvas.drawLine(bx, by - 8, bx, by + 8, bleColor);       // Vertical
-    _canvas.drawLine(bx, by - 8, bx + 5, by - 3, bleColor);   // Top right
-    _canvas.drawLine(bx + 5, by - 3, bx - 4, by + 4, bleColor); // Cross down
-    _canvas.drawLine(bx, by + 8, bx + 5, by + 3, bleColor);   // Bottom right
-    _canvas.drawLine(bx + 5, by + 3, bx - 4, by - 4, bleColor); // Cross up
-
-    _canvas.drawFastHLine(0, HEADER_H - 1, SCREEN_W, Colors::CLAUDE_ORANGE);
+    // 2. Footer: only redrawn on state transitions — content is static per-state.
+    //    Animated elements (blinking arrows) live inside the sprite above.
+    if (displayed->state != _lastFooterState) {
+        drawFooter(displayed, sessions->count(), sessions->displayRank());
+        _lastFooterState = displayed->state;
+    }
 }
 
-void DisplayManager::drawFooter(Session* session) {
+// ---------------------------------------------------------------------------
+// Footer — drawn directly to _lcd (80px tall, mostly static per state)
+// ---------------------------------------------------------------------------
+void DisplayManager::drawFooter(Session* session, uint8_t sessionCount, uint8_t displayRank) {
     int16_t footerY = HEADER_H + ANIM_H;
 
-    _canvas.fillRect(0, footerY, SCREEN_W, FOOTER_H, Colors::BG_PANEL);
-    _canvas.drawFastHLine(0, footerY, SCREEN_W, Colors::CLAUDE_ORANGE);
+    _lcd->fillRect(0, footerY, SCREEN_W, FOOTER_H, Colors::BG_PANEL);
+    _lcd->drawFastHLine(0, footerY, SCREEN_W, Colors::CLAUDE_ORANGE);
 
     const char* stateName = stateToString(session->state);
     uint16_t stateColor = Colors::TEXT_PRIMARY;
     switch (session->state) {
         case SessionState::THINKING:     stateColor = Colors::CLAUDE_ORANGE; break;
-        case SessionState::TOOL_USE:     stateColor = Colors::PURPLE_TOOL; break;
-        case SessionState::PERMISSION:   stateColor = Colors::RED_ALERT; break;
-        case SessionState::INPUT_NEEDED: stateColor = Colors::CYAN_INFO; break;
-        case SessionState::ERROR:        stateColor = Colors::RED_ALERT; break;
-        default:                         stateColor = Colors::BLUE_IDLE; break;
+        case SessionState::TOOL_USE:     stateColor = Colors::PURPLE_TOOL;   break;
+        case SessionState::PERMISSION:   stateColor = Colors::RED_ALERT;     break;
+        case SessionState::INPUT_NEEDED: stateColor = Colors::CYAN_INFO;     break;
+        case SessionState::ERROR:        stateColor = Colors::RED_ALERT;     break;
+        default:                         stateColor = Colors::BLUE_IDLE;     break;
     }
 
-    _canvas.setTextColor(stateColor);
-    _canvas.setTextSize(2);
-    _canvas.setTextDatum(lgfx::middle_center);
-    _canvas.drawString(stateName, SCREEN_W / 2, footerY + 22);
+    _lcd->setTextColor(stateColor);
+    _lcd->setTextSize(2);
+    _lcd->setTextDatum(lgfx::middle_center);
+    _lcd->drawString(stateName, SCREEN_W / 2, footerY + 22);
 
     if (stateNeedsAttention(session->state)) {
-        _canvas.setTextColor(Colors::YELLOW_WARN);
-        _canvas.setTextSize(1);
-        _canvas.setTextDatum(lgfx::middle_center);
-        _canvas.drawString(">>> TAP SCREEN TO FOCUS <<<", SCREEN_W / 2, footerY + 50);
-
-        uint32_t now = millis();
-        bool arrowPhase = ((now / 300) % 2) == 0;
-        uint16_t arrowColor = arrowPhase ? Colors::YELLOW_WARN : Colors::BG_PANEL;
-        _canvas.fillTriangle(5, footerY + 47, 15, footerY + 42, 15, footerY + 52, arrowColor);
-        _canvas.fillTriangle(SCREEN_W - 5, footerY + 47, SCREEN_W - 15, footerY + 42, SCREEN_W - 15, footerY + 52, arrowColor);
+        _lcd->setTextColor(Colors::YELLOW_WARN);
+        _lcd->setTextSize(1);
+        _lcd->setTextDatum(lgfx::middle_center);
+        _lcd->drawString("TAP SCREEN TO FOCUS", SCREEN_W / 2, footerY + 50);
     } else {
-        _canvas.setTextColor(Colors::TEXT_DIM);
-        _canvas.setTextSize(1);
-        _canvas.setTextDatum(lgfx::middle_center);
+        _lcd->setTextColor(Colors::TEXT_DIM);
+        _lcd->setTextSize(1);
+        _lcd->setTextDatum(lgfx::middle_center);
         char sidLabel[16];
         snprintf(sidLabel, sizeof(sidLabel), "session: %s", session->sid);
-        _canvas.drawString(sidLabel, SCREEN_W / 2, footerY + 50);
+        _lcd->drawString(sidLabel, SCREEN_W / 2, footerY + 50);
+    }
+
+    // --- Multi-session dot indicator ---
+    // Drawn only when there are multiple sessions. Filled dot = current session,
+    // empty dot = other session. Max 8 sessions (MAX_SESSIONS), dots are 6px
+    // diameter with 10px spacing, centered horizontally at the bottom of footer.
+    if (sessionCount > 1) {
+        static constexpr int16_t DOT_R    = 3;   // dot radius
+        static constexpr int16_t DOT_GAP  = 10;  // centre-to-centre spacing
+        int16_t totalW  = (sessionCount - 1) * DOT_GAP;
+        int16_t startX  = (SCREEN_W - totalW) / 2;
+        int16_t dotY    = footerY + FOOTER_H - DOT_R - 4;
+        for (uint8_t i = 0; i < sessionCount; i++) {
+            int16_t dx = startX + i * DOT_GAP;
+            if (i == displayRank) {
+                _lcd->fillCircle(dx, dotY, DOT_R, stateColor);
+            } else {
+                _lcd->drawCircle(dx, dotY, DOT_R, Colors::TEXT_DIM);
+            }
+        }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Waiting for BLE — full-screen static content drawn once on transition,
+// then only the animated elements are redrawn each frame.
+// ---------------------------------------------------------------------------
 void DisplayManager::drawWaitingForBle() {
-    _canvas.setTextColor(Colors::CLAUDE_ORANGE);
-    _canvas.setTextSize(2);
-    _canvas.setTextDatum(lgfx::middle_center);
-    _canvas.drawString("Claude Monitor", SCREEN_W / 2, SCREEN_H / 2 - 60);
-
-    // Animated Bluetooth icon (pulsing)
-    uint8_t angle = (uint8_t)((millis() * 256) / 2000);
+    // Static text is drawn only once (on transition, when _lastIdleScreen changed).
+    // Here we only redraw the animated elements using _idlePhase.
+    uint8_t angle = (uint8_t)((_idlePhase * 256) / 2000);
     int8_t pulse = isin(angle);
     uint8_t bright = 100 + (pulse + 127) * 100 / 254;
-    uint16_t bleColor = _canvas.color565(0, bright * 2 / 3, bright);
+    uint16_t bleColor = _lcd->color565(0, bright * 2 / 3, bright);
 
     int16_t bx = SCREEN_W / 2;
     int16_t by = SCREEN_H / 2;
-    // Larger BLE rune
-    int16_t s = 3;  // scale
-    _canvas.drawLine(bx, by - 8*s, bx, by + 8*s, bleColor);
-    _canvas.drawLine(bx, by - 8*s, bx + 5*s, by - 3*s, bleColor);
-    _canvas.drawLine(bx + 5*s, by - 3*s, bx - 4*s, by + 4*s, bleColor);
-    _canvas.drawLine(bx, by + 8*s, bx + 5*s, by + 3*s, bleColor);
-    _canvas.drawLine(bx + 5*s, by + 3*s, bx - 4*s, by - 4*s, bleColor);
+    int16_t s = 3;
+
+    // Overdraw static text once more — only needed on the very first call after
+    // transition (subsequent calls just update the animated icon in-place, but
+    // since we don't have a sprite here we redraw the icon region each frame).
+    _lcd->setTextColor(Colors::CLAUDE_ORANGE);
+    _lcd->setTextSize(2);
+    _lcd->setTextDatum(lgfx::middle_center);
+    _lcd->drawString("Claude Monitor", SCREEN_W / 2, SCREEN_H / 2 - 60);
+
+    // Erase previous icon area before redrawing (avoids ghost pixels from last frame)
+    _lcd->fillRect(bx - 45, by - 45, 90, 90, Colors::BG_DARK);
+
+    _lcd->drawLine(bx, by - 8*s, bx, by + 8*s, bleColor);
+    _lcd->drawLine(bx, by - 8*s, bx + 5*s, by - 3*s, bleColor);
+    _lcd->drawLine(bx + 5*s, by - 3*s, bx - 4*s, by + 4*s, bleColor);
+    _lcd->drawLine(bx, by + 8*s, bx + 5*s, by + 3*s, bleColor);
+    _lcd->drawLine(bx + 5*s, by + 3*s, bx - 4*s, by - 4*s, bleColor);
 
     // Broadcast arcs
     for (int r = 20; r <= 35; r += 8) {
         uint8_t arcBright = bright * (40 - r) / 40;
-        uint16_t arcColor = _canvas.color565(0, arcBright * 2 / 3, arcBright);
-        _canvas.drawCircle(bx, by, r, arcColor);
+        uint16_t arcColor = _lcd->color565(0, arcBright * 2 / 3, arcBright);
+        _lcd->drawCircle(bx, by, r, arcColor);
     }
 
-    _canvas.setTextColor(Colors::TEXT_DIM);
-    _canvas.setTextSize(1);
-    _canvas.setTextDatum(lgfx::middle_center);
-    _canvas.drawString("Bluetooth advertising...", SCREEN_W / 2, SCREEN_H / 2 + 50);
-    _canvas.drawString("Run claude-monitor on", SCREEN_W / 2, SCREEN_H / 2 + 70);
-    _canvas.drawString("your computer to connect", SCREEN_W / 2, SCREEN_H / 2 + 85);
+    _lcd->setTextColor(Colors::TEXT_DIM);
+    _lcd->setTextSize(1);
+    _lcd->setTextDatum(lgfx::middle_center);
+    _lcd->drawString("Bluetooth advertising...", SCREEN_W / 2, SCREEN_H / 2 + 50);
+    _lcd->drawString("Run claude-monitor on",    SCREEN_W / 2, SCREEN_H / 2 + 70);
+    _lcd->drawString("your computer to connect", SCREEN_W / 2, SCREEN_H / 2 + 85);
 }
 
+// ---------------------------------------------------------------------------
+// No sessions — full-screen. Static text drawn once on transition;
+// only the breathing dot is redrawn each frame using _idlePhase.
+// ---------------------------------------------------------------------------
 void DisplayManager::drawNoSessions() {
-    _canvas.fillSprite(Colors::BG_DARK);
+    // Static labels — cheap to redraw (no flicker risk, just text on dark bg)
+    _lcd->setTextColor(Colors::TEXT_DIM);
+    _lcd->setTextSize(2);
+    _lcd->setTextDatum(lgfx::middle_center);
+    _lcd->drawString("Claude Monitor", SCREEN_W / 2, SCREEN_H / 2 - 30);
 
-    _canvas.setTextColor(Colors::TEXT_DIM);
-    _canvas.setTextSize(2);
-    _canvas.setTextDatum(lgfx::middle_center);
-    _canvas.drawString("Claude Monitor", SCREEN_W / 2, SCREEN_H / 2 - 30);
+    _lcd->setTextSize(1);
+    _lcd->drawString("No active sessions",        SCREEN_W / 2, SCREEN_H / 2 + 10);
+    _lcd->drawString("Waiting for Claude Code...", SCREEN_W / 2, SCREEN_H / 2 + 30);
 
-    _canvas.setTextSize(1);
-    _canvas.drawString("No active sessions", SCREEN_W / 2, SCREEN_H / 2 + 10);
-    _canvas.drawString("Waiting for Claude Code...", SCREEN_W / 2, SCREEN_H / 2 + 30);
+    _lcd->setTextColor(_lcd->color565(0, 60, 80));
+    _lcd->drawString("BLE connected", SCREEN_W / 2, SCREEN_H / 2 + 55);
 
-    // BLE connected indicator
-    _canvas.setTextColor(_canvas.color565(0, 60, 80));
-    _canvas.drawString("BLE connected", SCREEN_W / 2, SCREEN_H / 2 + 55);
-
-    // Subtle breathing dot
-    uint8_t angle = (uint8_t)((millis() * 256) / 3000);
+    // Animated breathing dot — erase old position then redraw with new brightness
+    uint8_t angle = (uint8_t)((_idlePhase * 256) / 3000);
     int8_t breath = isin(angle);
     uint8_t bright = 50 + (breath + 127) * 50 / 254;
-    _canvas.fillCircle(SCREEN_W / 2, SCREEN_H / 2 + 80, 5, _canvas.color565(bright, bright / 2, 0));
+    int16_t dotX = SCREEN_W / 2;
+    int16_t dotY = SCREEN_H / 2 + 80;
+    _lcd->fillCircle(dotX, dotY, 6, Colors::BG_DARK);  // erase with 1px margin
+    _lcd->fillCircle(dotX, dotY, 5, _lcd->color565(bright, bright / 2, 0));
 }

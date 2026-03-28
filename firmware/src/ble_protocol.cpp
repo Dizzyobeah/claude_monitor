@@ -1,4 +1,5 @@
 #include "ble_protocol.h"
+#include <BLESecurity.h>
 
 BleProtocol* g_bleProtocol = nullptr;
 
@@ -64,6 +65,13 @@ void BleProtocol::begin() {
     // Request a larger MTU so our JSON messages fit in one packet
     BLEDevice::setMTU(256);
 
+    // "Just works" bonding — no PIN, works on Windows/macOS/Linux.
+    // Static calls set GAP security params directly in the BLE stack.
+    BLESecurity::setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND); // bonding, no MITM, Secure Connections
+    BLESecurity::setCapability(ESP_IO_CAP_NONE);                  // no display/keyboard = just works
+    BLESecurity::setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+    BLESecurity::setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+
     _server = BLEDevice::createServer();
     _server->setCallbacks(new ServerCallbacks());
 
@@ -89,30 +97,42 @@ void BleProtocol::begin() {
     // Start advertising
     BLEAdvertising* adv = BLEDevice::getAdvertising();
     adv->addServiceUUID(SERVICE_UUID);
-    adv->setScanResponse(true);
-    // Helps iPhone connection speed
-    adv->setMinPreferred(0x06);
-    adv->setMaxPreferred(0x12);
+    // setScanResponse(false) keeps the service UUID in the primary advertisement
+    // packet. Windows WinRT only filters on the primary packet, not scan response,
+    // so this is required for reliable discovery on Windows.
+    adv->setScanResponse(false);
+    // Fast advertising interval (20ms) for reliable Windows discovery
+    // Units are 0.625ms: 0x20 = 20ms, 0x28 = 25ms
+    adv->setMinInterval(0x20);
+    adv->setMaxInterval(0x28);
     BLEDevice::startAdvertising();
 
     Serial.println("BLE advertising as 'Claude Monitor'");
 }
 
 void BleProtocol::update() {
-    // Process data received from BLE callback
+    // Safely pull data written by the BLE task (core 0) into a local buffer.
+    // portENTER/EXIT_CRITICAL_SAFE work correctly whether called from a task
+    // or ISR and handle both single- and dual-core ESP32 variants.
+    char local[RX_BUF_SIZE];
+    size_t len = 0;
+    bool hasData = false;
+
+    portENTER_CRITICAL_SAFE(&_rxMux);
     if (_rxReady) {
-        _rxReady = false;
-        char local[RX_BUF_SIZE];
-        size_t len = _rxLen;
+        len = _rxLen;
         memcpy(local, _rxBuf, len);
         local[len] = '\0';
+        _rxReady = false;
+        hasData = true;
+    }
+    portEXIT_CRITICAL_SAFE(&_rxMux);
 
+    if (hasData) {
         // May contain multiple JSON messages separated by newlines
         char* line = strtok(local, "\n\r");
         while (line) {
-            if (strlen(line) > 0 && parseLine(line)) {
-                _hasCmd = true;
-            }
+            if (strlen(line) > 0) parseLine(line);
             line = strtok(nullptr, "\n\r");
         }
     }
@@ -130,9 +150,8 @@ void BleProtocol::update() {
 }
 
 Command BleProtocol::takeCommand() {
-    _hasCmd = false;
-    Command c = _cmd;
-    _cmd = Command{};
+    Command c = _cmdRing[_cmdHead % CMD_RING_SIZE];
+    _cmdHead = (_cmdHead + 1) % CMD_RING_SIZE;
     return c;
 }
 
@@ -151,9 +170,11 @@ void BleProtocol::_onDisconnect() {
 
 void BleProtocol::_onWrite(const uint8_t* data, size_t length) {
     if (length >= RX_BUF_SIZE) length = RX_BUF_SIZE - 1;
+    portENTER_CRITICAL_SAFE(&_rxMux);
     memcpy(_rxBuf, data, length);
     _rxLen = length;
     _rxReady = true;
+    portEXIT_CRITICAL_SAFE(&_rxMux);
 }
 
 bool BleProtocol::parseLine(const char* line) {
@@ -163,37 +184,43 @@ bool BleProtocol::parseLine(const char* line) {
     const char* cmd = doc["cmd"];
     if (!cmd) return false;
 
-    _cmd = Command{};
+    Command parsed{};
 
     if (strcmp(cmd, "state") == 0) {
-        _cmd.type = Command::STATE;
+        parsed.type = Command::STATE;
         const char* sid = doc["sid"];
-        if (sid) strncpy(_cmd.sid, sid, 5);
-        _cmd.state = stateFromString(doc["state"]);
+        if (sid) strncpy(parsed.sid, sid, 5);
+        parsed.state = stateFromString(doc["state"]);
         const char* label = doc["label"];
-        if (label) strncpy(_cmd.label, label, 20);
-        _cmd.idx   = doc["idx"] | 0;
-        _cmd.total = doc["total"] | 1;
-        return true;
-    }
-    if (strcmp(cmd, "remove") == 0) {
-        _cmd.type = Command::REMOVE;
+        if (label) strncpy(parsed.label, label, 20);
+        parsed.idx   = doc["idx"] | 0;
+        parsed.total = doc["total"] | 1;
+    } else if (strcmp(cmd, "remove") == 0) {
+        parsed.type = Command::REMOVE;
         const char* sid = doc["sid"];
-        if (sid) strncpy(_cmd.sid, sid, 5);
-        return true;
-    }
-    if (strcmp(cmd, "ping") == 0) {
-        _cmd.type = Command::PING;
+        if (sid) strncpy(parsed.sid, sid, 5);
+    } else if (strcmp(cmd, "ping") == 0) {
+        parsed.type = Command::PING;
         sendJson("{\"cmd\":\"pong\"}");
+        // ping/pong is handled inline — no need to queue it
         return true;
-    }
-    if (strcmp(cmd, "config") == 0) {
-        _cmd.type = Command::CONFIG;
-        _cmd.brightness = doc["brightness"] | 255;
-        return true;
+    } else if (strcmp(cmd, "config") == 0) {
+        parsed.type = Command::CONFIG;
+        parsed.brightness = doc["brightness"] | 255;
+    } else {
+        return false;
     }
 
-    return false;
+    // Push into ring buffer; if full, drop the oldest entry (overwrite head)
+    uint8_t nextTail = (_cmdTail + 1) % CMD_RING_SIZE;
+    if (nextTail == _cmdHead) {
+        // Ring is full — advance head to make room (oldest command dropped)
+        Serial.println("[BLE] Warning: command ring full, dropping oldest command");
+        _cmdHead = (_cmdHead + 1) % CMD_RING_SIZE;
+    }
+    _cmdRing[_cmdTail] = parsed;
+    _cmdTail = (_cmdTail + 1) % CMD_RING_SIZE;
+    return true;
 }
 
 void BleProtocol::sendJson(const char* json) {

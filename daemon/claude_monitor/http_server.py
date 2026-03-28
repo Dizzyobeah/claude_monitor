@@ -3,14 +3,18 @@
 import logging
 from aiohttp import web
 from .session_tracker import SessionTracker
+from .ble_manager import BleManager
 
 log = logging.getLogger(__name__)
 
 
-def create_app(tracker: SessionTracker) -> web.Application:
+def create_app(
+    tracker: SessionTracker, ble: BleManager | None = None
+) -> web.Application:
     """Create the aiohttp application for receiving hook POSTs."""
     app = web.Application()
     app["tracker"] = tracker
+    app["ble"] = ble
 
     app.router.add_post("/hook", handle_hook)
     app.router.add_get("/status", handle_status)
@@ -47,11 +51,17 @@ async def handle_hook(request: web.Request) -> web.Response:
 async def handle_status(request: web.Request) -> web.Response:
     """Return current session states as JSON (for debugging)."""
     tracker: SessionTracker = request.app["tracker"]
+    ble: BleManager | None = request.app.get("ble")
     sessions = {
         sid: {"state": info.state, "label": info.label}
         for sid, info in tracker.sessions.items()
     }
-    return web.json_response(sessions)
+    return web.json_response(
+        {
+            "ble_connected": ble.connected if ble is not None else None,
+            "sessions": sessions,
+        }
+    )
 
 
 async def handle_health(request: web.Request) -> web.Response:

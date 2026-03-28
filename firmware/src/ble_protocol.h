@@ -6,6 +6,8 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // Session states matching the Python daemon protocol
 enum class SessionState : uint8_t {
@@ -37,15 +39,15 @@ struct Command {
 
 // BLE UUIDs for Claude Monitor service
 // Custom 128-bit UUIDs to avoid conflicts
-#define SERVICE_UUID        "cm010000-cafe-babe-c0de-000000000001"
-#define CHAR_RX_UUID        "cm010001-cafe-babe-c0de-000000000001"  // Daemon writes commands here
-#define CHAR_TX_UUID        "cm010002-cafe-babe-c0de-000000000001"  // ESP32 sends tap events here (notify)
+#define SERVICE_UUID        "c0de0000-cafe-babe-c0de-000000000001"
+#define CHAR_RX_UUID        "c0de0001-cafe-babe-c0de-000000000001"  // Daemon writes commands here
+#define CHAR_TX_UUID        "c0de0002-cafe-babe-c0de-000000000001"  // ESP32 sends tap events here (notify)
 
 class BleProtocol {
 public:
     void begin();
     void update();                  // Call in loop() - processes queued commands
-    bool hasCommand() const { return _hasCmd; }
+    bool hasCommand() const { return _cmdHead != _cmdTail; }
     Command takeCommand();
 
     void sendTap(const char* sid);
@@ -63,16 +65,23 @@ private:
     BLECharacteristic* _txChar = nullptr;
     BLECharacteristic* _rxChar = nullptr;
 
-    Command _cmd;
-    bool _hasCmd = false;
+    // Ring buffer for parsed commands — avoids silently dropping commands when
+    // the daemon sends a burst (e.g. full-state dump on reconnect).
+    static constexpr uint8_t CMD_RING_SIZE = 8;  // power-of-2 keeps wrap cheap
+    Command _cmdRing[CMD_RING_SIZE];
+    volatile uint8_t _cmdHead = 0;  // consumer index (loop task, core 1)
+    volatile uint8_t _cmdTail = 0;  // producer index (BLE task fills via update())
+
     bool _connected = false;
     bool _justConnected = false;
 
-    // Queue for incoming data (BLE callback runs in BLE task, not main loop)
+    // Queue for incoming raw BLE data (BLE callback runs on core 0).
+    // Protected by _rxMux spinlock — safe across the two ESP32 cores.
     static constexpr size_t RX_BUF_SIZE = 512;
     char _rxBuf[RX_BUF_SIZE];
-    volatile size_t _rxLen = 0;
-    volatile bool _rxReady = false;
+    size_t _rxLen = 0;
+    bool _rxReady = false;
+    portMUX_TYPE _rxMux = portMUX_INITIALIZER_UNLOCKED;
 
     bool parseLine(const char* line);
     void sendJson(const char* json);

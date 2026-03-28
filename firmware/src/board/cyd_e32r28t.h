@@ -17,7 +17,7 @@ public:
             auto cfg = _bus.config();
             cfg.spi_host   = HSPI_HOST;
             cfg.spi_mode   = 0;
-            cfg.freq_write = 40000000;
+            cfg.freq_write = 60000000;
             cfg.freq_read  = 16000000;
             cfg.pin_sclk   = 14;
             cfg.pin_mosi   = 13;
@@ -84,9 +84,6 @@ public:
 static constexpr int PIN_LED_R = 4;
 static constexpr int PIN_LED_G = 16;
 static constexpr int PIN_LED_B = 17;
-
-// Speaker
-static constexpr int PIN_SPEAKER = 26;
 
 // Display dimensions
 static constexpr int SCREEN_W = 240;

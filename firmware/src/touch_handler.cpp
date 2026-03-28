@@ -16,8 +16,6 @@ bool TouchHandler::update() {
     if (isTouched && !_wasTouched) {
         // Touch down - register tap if debounce period has elapsed
         if (now - _lastTouchTime > DEBOUNCE_MS) {
-            _lastX = tp.x;
-            _lastY = tp.y;
             _lastTouchTime = now;
             _wasTouched = true;
             return true;  // Tap detected

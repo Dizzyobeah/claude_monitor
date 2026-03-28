@@ -5,6 +5,7 @@
 // Touch to focus the terminal window needing attention.
 
 #include <Arduino.h>
+#include <esp_task_wdt.h>
 #include "board/board_config.h"
 #include "ble_protocol.h"
 #include "session_store.h"
@@ -16,6 +17,10 @@ static BleProtocol protocol;
 static SessionStore sessions;
 static DisplayManager display;
 static TouchHandler touch;
+
+// Last time the RGB LED state was updated. Gated at 500ms to avoid hammering
+// digitalWrite on every loop() iteration (which can run thousands of times/sec).
+static uint32_t lastLedUpdate = 0;
 
 void updateLED(SessionState state) {
     switch (state) {
@@ -73,10 +78,24 @@ void setup() {
 
     // Start BLE (begins advertising immediately)
     protocol.begin();
+
+    // Hardware watchdog: reset the device if loop() stalls for more than 15 seconds.
+    // This recovers from BLE stack hangs or display deadlocks without manual intervention.
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms    = 15000,
+        .idle_core_mask = 0,          // Don't watch idle tasks
+        .trigger_panic  = true,       // Panic + reboot on expiry
+    };
+    esp_task_wdt_reconfigure(&wdt_cfg);
+    esp_task_wdt_add(NULL);  // Subscribe the current (loop) task
+    Serial.println("Watchdog armed (15s timeout)");
 }
 
 void loop() {
     uint32_t now = millis();
+
+    // Reset watchdog — proves loop() is alive to the hardware timer
+    esp_task_wdt_reset();
 
     // BLE event processing
     protocol.update();
@@ -99,8 +118,9 @@ void loop() {
         }
     }
 
-    // Session carousel/housekeeping
+    // Session carousel/housekeeping — prune sessions that haven't updated in 10 minutes
     sessions.update(now);
+    sessions.pruneStale(now);
 
     // Touch -> send focus command
     if (touch.update()) {
@@ -114,21 +134,25 @@ void loop() {
         }
     }
 
-    // LED state
-    Session* priority = sessions.getPriority();
-    Session* displayed = sessions.getDisplayed();
-    if (priority) {
-        updateLED(priority->state);
-    } else if (displayed) {
-        updateLED(displayed->state);
-    } else if (!protocol.isConnected()) {
-        // Pulse blue while waiting for BLE connection
-        bool blink = ((now / 500) % 2) == 0;
-        digitalWrite(PIN_LED_B, blink ? LOW : HIGH);
-        digitalWrite(PIN_LED_R, HIGH);
-        digitalWrite(PIN_LED_G, HIGH);
-    } else {
-        updateLED(SessionState::DISCONNECTED);
+    // LED state — updated at most every 500ms to avoid unnecessary digitalWrite spam
+    if (now - lastLedUpdate >= 500) {
+        lastLedUpdate = now;
+        Session* priority = sessions.getPriority();
+        Session* displayed = sessions.getDisplayed();
+        if (priority) {
+            updateLED(priority->state);
+        } else if (displayed) {
+            updateLED(displayed->state);
+        } else if (!protocol.isConnected()) {
+            // Pulse blue while waiting for BLE connection (500ms gate = natural blink rate)
+            static bool blinkState = false;
+            blinkState = !blinkState;
+            digitalWrite(PIN_LED_B, blinkState ? LOW : HIGH);
+            digitalWrite(PIN_LED_R, HIGH);
+            digitalWrite(PIN_LED_G, HIGH);
+        } else {
+            updateLED(SessionState::DISCONNECTED);
+        }
     }
 
     // Render display
