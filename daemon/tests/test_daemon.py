@@ -190,8 +190,9 @@ class TestSyncLoopDebounce:
 
         base = time.monotonic()
         tick = [0]
-        # advance time by enough to clear the debounce on tick 2
-        debounce_ticks = int(SEND_DEBOUNCE_S / SYNC_INTERVAL) + 2
+        # advance time by enough to clear the debounce (+3 accounts for
+        # the was_connected tick, the debounce itself, and float rounding)
+        debounce_ticks = round(SEND_DEBOUNCE_S / SYNC_INTERVAL) + 3
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             with patch(

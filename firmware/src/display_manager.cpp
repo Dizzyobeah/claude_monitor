@@ -10,21 +10,26 @@ void DisplayManager::begin(LGFX* lcd) {
     _lcd->fillScreen(Colors::BG_DARK);
 
     // Allocate animation-zone sprite for flicker-free animation rendering.
-    // Size: 240 x ANIM_H (240px) x 16-bit = 115,200 bytes.
-    // Footer (80px) is drawn directly to _lcd; it barely changes frame-to-frame.
-    Serial.printf("[Display] Free heap before sprite alloc: %u bytes\n", (unsigned)ESP.getFreeHeap());
+    // Only allocate the dirty band (rows ANIM_DIRTY_Y0..Y1) instead of the full
+    // 240-row animation zone — cuts the buffer from 115KB to ~79KB, which fits
+    // in the largest contiguous heap block after LovyanGFX/WiFi allocations.
+    static constexpr int16_t SPRITE_H = ANIM_DIRTY_Y1 - ANIM_DIRTY_Y0;
+    Serial.printf("[Display] Free heap: %u bytes, max contiguous: %u bytes\n",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+    Serial.printf("[Display] Requesting sprite %dx%d = %u bytes\n",
+                  SCREEN_W, SPRITE_H, (unsigned)(SCREEN_W * SPRITE_H * 2));
     _canvas = new LGFX_Sprite(_lcd);
     _canvas->setColorDepth(16);
-    void* buf = _canvas->createSprite(SCREEN_W, ANIM_H);
-    Serial.printf("[Display] Free heap after  sprite alloc: %u bytes\n", (unsigned)ESP.getFreeHeap());
+    void* buf = _canvas->createSprite(SCREEN_W, SPRITE_H);
+    Serial.printf("[Display] Free heap after alloc: %u bytes\n", (unsigned)ESP.getFreeHeap());
 
     if (!buf) {
-        Serial.println("[Display] ERROR: sprite allocation failed — not enough heap!");
+        Serial.println("[Display] ERROR: sprite allocation failed — not enough contiguous heap!");
         delete _canvas;
         _canvas = nullptr;
     } else {
         Serial.printf("[Display] Sprite OK (%dx%d 16-bit, %u bytes)\n",
-                      SCREEN_W, ANIM_H, (unsigned)(SCREEN_W * ANIM_H * 2));
+                      SCREEN_W, SPRITE_H, (unsigned)(SCREEN_W * SPRITE_H * 2));
         _canvas->fillScreen(Colors::BG_DARK);
     }
 
@@ -97,22 +102,16 @@ void DisplayManager::update(uint32_t now, SessionStore* sessions, bool bleConnec
 
         if (_animDirty) {
             if (_canvas) {
-                // Sprite path: compose frame entirely off-screen, then push in one SPI burst.
-                // fillScreen + draw happen in sprite RAM (no SPI), so the LCD never sees
-                // a blank intermediate frame — eliminates flicker.
-                _canvas->fillScreen(Colors::BG_DARK);
-                // Coordinates are sprite-relative: origin (0,0) = top-left of animation zone
-                anim->draw(_canvas, 0, 0, SCREEN_W, ANIM_H);
-                // Push only the rows that contain the character and decorations.
-                // Pushing 165 rows instead of 240 cuts SPI time from ~15ms to ~10ms,
-                // narrowing the tearing window where the panel scan overtakes the write.
-                // LovyanGFX's pushSprite has no source-rect overload; use pushImage on
-                // the LCD with a pointer into the sprite's pixel buffer instead.
+                // Sprite covers only the dirty band (ANIM_DIRTY_Y0..Y1).
+                // Draw with y-offset so the animation renders at the correct
+                // position within this smaller sprite.
                 static constexpr int16_t BAND_H = ANIM_DIRTY_Y1 - ANIM_DIRTY_Y0;
+                _canvas->fillScreen(Colors::BG_DARK);
+                anim->draw(_canvas, 0, -ANIM_DIRTY_Y0, SCREEN_W, ANIM_H);
+                // Push the entire sprite to the corresponding LCD region
                 const uint16_t* buf = reinterpret_cast<const uint16_t*>(_canvas->getBuffer());
                 _lcd->startWrite();
-                _lcd->pushImage(0, HEADER_H + ANIM_DIRTY_Y0, SCREEN_W, BAND_H,
-                                buf + ANIM_DIRTY_Y0 * SCREEN_W);
+                _lcd->pushImage(0, HEADER_H + ANIM_DIRTY_Y0, SCREEN_W, BAND_H, buf);
                 _lcd->endWrite();
             } else {
                 // Fallback: no sprite (OOM) — draw directly to LCD (may flicker slightly)

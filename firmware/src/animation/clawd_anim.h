@@ -1,6 +1,7 @@
 #pragma once
 #include "animation.h"
 #include "../session_store.h"
+#include "../util.h"
 
 // =============================================================================
 // ClawdAnimation — single class that handles all 6 session states.
@@ -59,7 +60,7 @@ public:
         // --- Per-state derived values ---
         int16_t shakeX = 0;
         int16_t shakeY = 0;
-        uint16_t bodyColor = canvas->color565(206, 142, 107); // terracotta
+        uint16_t bodyColor = Colors::BODY_DEFAULT;
         uint8_t eyeMode = EYE_OPEN;
         int8_t  legPhase = 0;  // 0 = standing; signed offset for walk cycle
 
@@ -91,7 +92,7 @@ public:
                 legPhase = (isin(walkAngle) * S) / 127;
                 eyeMode = EYE_OPEN;
                 // Purple body tint
-                bodyColor = canvas->color565(190, 120, 160);
+                bodyColor = Colors::BODY_TOOL;
                 break;
             }
 
@@ -122,7 +123,7 @@ public:
                     shakeX = (int16_t)((isin(sa) * decay * 6) / (127 * 500));
                 }
                 eyeMode = EYE_X;
-                bodyColor = canvas->color565(200, 80, 70); // red-tinted
+                bodyColor = Colors::BODY_ERROR;
                 legPhase = 0;
                 break;
             }
@@ -138,7 +139,7 @@ public:
         drawClawd(canvas, cx + shakeX, cy + shakeY, S, bodyColor, eyeMode, legPhase);
 
         // --- State-specific extras drawn IN FRONT of the character ---
-        drawStateExtrasFront(canvas, cx + shakeX, cy + shakeY, S, h);
+        drawStateExtrasFront(canvas, cx + shakeX, cy + shakeY, S, w, h);
     }
 
 private:
@@ -289,12 +290,12 @@ private:
 
     // -------------------------------------------------------------------------
     // Extras drawn IN FRONT of the character.
-    // h = canvas height, used by _drawAttentionArrows to avoid hardcoded 240.
+    // w/h = canvas dimensions, used by _drawAttentionArrows.
     // -------------------------------------------------------------------------
     void drawStateExtrasFront(lgfx::LovyanGFX* canvas,
                                int16_t cx, int16_t cy,
                                int16_t S,
-                               int16_t canvasH)
+                               int16_t canvasW, int16_t canvasH)
     {
         switch (_state) {
 
@@ -361,7 +362,7 @@ private:
                     canvas->drawRect(boxX - i, boxY - i, boxW + 2*i, boxH + 2*i, borderColor);
 
                 // Blinking inward-pointing arrows near bottom of sprite (above footer)
-                _drawAttentionArrows(canvas, canvasH, Colors::YELLOW_WARN);
+                _drawAttentionArrows(canvas, canvasW, canvasH, Colors::YELLOW_WARN);
                 break;
             }
 
@@ -375,7 +376,7 @@ private:
                 }
 
                 // Blinking inward-pointing arrows near bottom of sprite (above footer)
-                _drawAttentionArrows(canvas, canvasH, Colors::CYAN_INFO);
+                _drawAttentionArrows(canvas, canvasW, canvasH, Colors::CYAN_INFO);
                 break;
             }
 
@@ -392,13 +393,16 @@ private:
     // canvasH is passed in from draw() instead of hardcoding 240, so this works
     // correctly if ANIM_H is ever changed.
     // -------------------------------------------------------------------------
-    void _drawAttentionArrows(lgfx::LovyanGFX* canvas, int16_t canvasH, uint16_t color) {
-        int16_t ay = canvasH - 12;
+    void _drawAttentionArrows(lgfx::LovyanGFX* canvas, int16_t canvasW, int16_t canvasH, uint16_t color) {
+        // Clamp to the dirty-band sprite height so arrows are visible when the
+        // sprite is smaller than canvasH (dirty-band optimization in DisplayManager).
+        static constexpr int16_t BAND_H = ANIM_DIRTY_Y1 - ANIM_DIRTY_Y0;
+        int16_t ay = min((int16_t)(canvasH - 12), (int16_t)(BAND_H - 8));
         bool visible = ((_phase / 300) % 2) == 0;
         uint16_t arrowColor = visible ? color : Colors::BG_DARK;
         // Left arrow (pointing right →)
-        canvas->fillTriangle(5,   ay,     15, ay - 5, 15, ay + 5, arrowColor);
+        canvas->fillTriangle(5,            ay,     15,            ay - 5, 15,            ay + 5, arrowColor);
         // Right arrow (pointing left ←)
-        canvas->fillTriangle(234, ay,    224, ay - 5, 224, ay + 5, arrowColor);
+        canvas->fillTriangle(canvasW - 6,  ay,     canvasW - 16,  ay - 5, canvasW - 16,  ay + 5, arrowColor);
     }
 };

@@ -127,8 +127,13 @@ uint8_t SessionStore::displayRank() const {
 void SessionStore::cycleNext() {
     if (_count <= 1) return;
     int start = _displayIdx;
+    uint8_t steps = 0;
     do {
         _displayIdx = (_displayIdx + 1) % MAX_SESSIONS;
+        if (++steps > MAX_SESSIONS) {
+            recount();  // _count was stale — recover gracefully
+            return;
+        }
     } while (!_sessions[_displayIdx].active && _displayIdx != start);
     _stateChanged = true;
 }
@@ -155,9 +160,8 @@ void SessionStore::update(uint32_t now) {
     }
 
     // Prune stale sessions every 30 seconds
-    static uint32_t lastPrune = 0;
-    if (now - lastPrune > 30000) {
-        lastPrune = now;
+    if (now - _lastPrune > 30000) {
+        _lastPrune = now;
         pruneStale(now);
     }
 }

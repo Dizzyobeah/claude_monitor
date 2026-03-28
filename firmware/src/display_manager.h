@@ -4,20 +4,12 @@
 #include "session_store.h"
 #include "animation/animation.h"
 #include "animation/clawd_anim.h"
+#include "util.h"
 
 // Layout constants
 static constexpr int16_t HEADER_H  = 0;
 static constexpr int16_t ANIM_H    = 240;
 static constexpr int16_t FOOTER_H  = 80;  // SCREEN_H - ANIM_H
-
-// Rows within the animation sprite that contain the character + all decorations.
-// Pushing only this band instead of the full 240-row sprite cuts SPI time by ~30%,
-// shrinking the window during which the panel scan and SPI write overlap (tearing).
-// Derived from: character center cy=120, body top by=cy-4*S=76, tallest decoration
-// (IDLE glow ellipse) ~10px below legs bottom (cy+4*S+3*S+10=197), dots above head
-// (cy-4*S-22=54). Add 4px safety margin each side → [50, 210].
-static constexpr int16_t ANIM_DIRTY_Y0 = 50;   // first dirty row in sprite coords
-static constexpr int16_t ANIM_DIRTY_Y1 = 215;  // last dirty row  (exclusive)
 
 class DisplayManager {
 public:

@@ -17,12 +17,9 @@ class SessionInfo:
     session_id: str
     state: str = "IDLE"
     label: str = ""
-    last_update: float = 0.0
+    last_update: float = dataclasses.field(default_factory=time.time)
     tty: str = ""
     ppid: str = ""
-
-    def __post_init__(self):
-        self.last_update = time.time()
 
 
 class SessionTracker:

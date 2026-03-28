@@ -1,0 +1,16 @@
+{
+  "name": "claude-monitor",
+  "metadata": {
+    "description": "BLE-connected ESP32 hardware status display for Claude Code sessions"
+  },
+  "owner": {
+    "name": "DizzyObeah"
+  },
+  "plugins": [
+    {
+      "name": "claude-monitor",
+      "source": "./",
+      "description": "Hardware status display for Claude Code sessions via BLE-connected ESP32 touchscreen"
+    }
+  ]
+}

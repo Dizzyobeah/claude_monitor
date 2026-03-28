@@ -40,6 +40,7 @@ private:
     uint8_t _count = 0;
     uint8_t _displayIdx = 0;
     uint32_t _lastCarousel = 0;
+    uint32_t _lastPrune = 0;
     bool _stateChanged = true;
 
     int findBySid(const char* sid);

@@ -1,0 +1,11 @@
+{
+  "name": "claude-monitor",
+  "version": "0.1.0",
+  "description": "Hardware status display for Claude Code sessions via BLE-connected ESP32 touchscreen",
+  "author": {
+    "name": "DizzyObeah"
+  },
+  "license": "MIT",
+  "keywords": ["hardware", "ble", "esp32", "status-display", "cyd"],
+  "hooks": "./hooks/hooks.json"
+}

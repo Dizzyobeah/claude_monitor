@@ -17,7 +17,7 @@ class ServerCallbacks : public BLEServerCallbacks {
 class RxCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* ch) override {
         if (!g_bleProtocol) return;
-        String val = ch->getValue();
+        std::string val = ch->getValue();
         if (val.length() > 0) {
             g_bleProtocol->_onWrite((const uint8_t*)val.c_str(), val.length());
         }
@@ -66,11 +66,11 @@ void BleProtocol::begin() {
     BLEDevice::setMTU(256);
 
     // "Just works" bonding — no PIN, works on Windows/macOS/Linux.
-    // Static calls set GAP security params directly in the BLE stack.
-    BLESecurity::setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND); // bonding, no MITM, Secure Connections
-    BLESecurity::setCapability(ESP_IO_CAP_NONE);                  // no display/keyboard = just works
-    BLESecurity::setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
-    BLESecurity::setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+    BLESecurity* security = new BLESecurity();
+    security->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
+    security->setCapability(ESP_IO_CAP_NONE);
+    security->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+    security->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
 
     _server = BLEDevice::createServer();
     _server->setCallbacks(new ServerCallbacks());
@@ -101,11 +101,13 @@ void BleProtocol::begin() {
     // packet. Windows WinRT only filters on the primary packet, not scan response,
     // so this is required for reliable discovery on Windows.
     adv->setScanResponse(false);
-    // Fast advertising interval (20ms) for reliable Windows discovery
-    // Units are 0.625ms: 0x20 = 20ms, 0x28 = 25ms
-    adv->setMinInterval(0x20);
-    adv->setMaxInterval(0x28);
+    // Advertising interval: 100ms/150ms — reliably discovered by macOS, Windows,
+    // iOS, and Android while using ~3-5x less radio power than the minimum 20ms.
+    // Units are 0.625ms: 0xA0 = 100ms, 0xF0 = 150ms.
+    adv->setMinInterval(0xA0);
+    adv->setMaxInterval(0xF0);
     BLEDevice::startAdvertising();
+    _advertising = true;
 
     Serial.println("BLE advertising as 'Claude Monitor'");
 }
@@ -143,10 +145,17 @@ void BleProtocol::update() {
         sendReady();
     }
 
-    // If disconnected, restart advertising
-    if (!_connected && _server->getConnectedCount() == 0) {
+    // If disconnected and not already advertising, restart advertising once.
+    // Calling startAdvertising() every loop iteration overwhelms the BLE stack
+    // and eventually causes it to block, triggering the task watchdog.
+    if (!_connected && !_advertising && _server->getConnectedCount() == 0) {
         BLEDevice::startAdvertising();
+        _advertising = true;
     }
+}
+
+bool BleProtocol::hasCommand() {
+    return _cmdHead != _cmdTail;
 }
 
 Command BleProtocol::takeCommand() {
@@ -158,14 +167,14 @@ Command BleProtocol::takeCommand() {
 void BleProtocol::_onConnect() {
     _connected = true;
     _justConnected = true;
+    _advertising = false;  // advertising stops when a client connects
     Serial.println("BLE client connected");
 }
 
 void BleProtocol::_onDisconnect() {
     _connected = false;
+    _advertising = false;  // mark stale so update() restarts it once
     Serial.println("BLE client disconnected - re-advertising");
-    // Restart advertising after disconnect
-    BLEDevice::startAdvertising();
 }
 
 void BleProtocol::_onWrite(const uint8_t* data, size_t length) {

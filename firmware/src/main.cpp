@@ -6,6 +6,7 @@
 
 #include <Arduino.h>
 #include <esp_task_wdt.h>
+#include <esp_system.h>
 #include "board/board_config.h"
 #include "ble_protocol.h"
 #include "session_store.h"
@@ -62,6 +63,21 @@ void setup() {
     Serial.begin(115200);
     Serial.println("\n=== Claude Monitor (BLE) ===");
 
+    // Print reset reason to diagnose reboots
+    esp_reset_reason_t reason = esp_reset_reason();
+    Serial.printf("[Boot] Reset reason: %d ", (int)reason);
+    switch (reason) {
+        case ESP_RST_POWERON:  Serial.println("(power-on)"); break;
+        case ESP_RST_SW:       Serial.println("(software reset)"); break;
+        case ESP_RST_PANIC:    Serial.println("(panic/exception)"); break;
+        case ESP_RST_INT_WDT:  Serial.println("(interrupt watchdog)"); break;
+        case ESP_RST_TASK_WDT: Serial.println("(task watchdog)"); break;
+        case ESP_RST_WDT:      Serial.println("(other watchdog)"); break;
+        case ESP_RST_BROWNOUT: Serial.println("(brownout)"); break;
+        default:               Serial.println("(unknown)"); break;
+    }
+    Serial.printf("[Boot] Free heap: %u bytes\n", (unsigned)ESP.getFreeHeap());
+
     // Display first so user sees something immediately
     display.begin(&lcd);
 
@@ -81,27 +97,42 @@ void setup() {
 
     // Hardware watchdog: reset the device if loop() stalls for more than 15 seconds.
     // This recovers from BLE stack hangs or display deadlocks without manual intervention.
-    esp_task_wdt_config_t wdt_cfg = {
-        .timeout_ms    = 15000,
-        .idle_core_mask = 0,          // Don't watch idle tasks
-        .trigger_panic  = true,       // Panic + reboot on expiry
-    };
-    esp_task_wdt_reconfigure(&wdt_cfg);
+    esp_task_wdt_init(15, true);  // 15s timeout, panic on expiry
     esp_task_wdt_add(NULL);  // Subscribe the current (loop) task
     Serial.println("Watchdog armed (15s timeout)");
 }
 
+// Debug: log loop phases that exceed this threshold (ms)
+static constexpr uint32_t LOOP_WARN_MS = 100;
+static uint32_t loopCount = 0;
+static uint32_t lastLoopReport = 0;
+
 void loop() {
     uint32_t now = millis();
+    uint32_t loopStart = now;
+    loopCount++;
+
+    // Print once on first loop iteration to confirm loop() is running
+    static bool firstLoop = true;
+    if (firstLoop) {
+        firstLoop = false;
+        Serial.printf("[Loop] First iteration at %ums, stack high water: %u bytes free\n",
+                      now, (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    }
 
     // Reset watchdog — proves loop() is alive to the hardware timer
     esp_task_wdt_reset();
 
-    // BLE event processing
+    // --- BLE event processing ---
+    uint32_t t0 = millis();
     protocol.update();
+    uint32_t t1 = millis();
+    if (t1 - t0 > LOOP_WARN_MS) Serial.printf("[SLOW] BLE update: %ums\n", t1 - t0);
 
-    // Process incoming commands
+    // --- Process incoming commands ---
+    uint8_t cmdCount = 0;
     while (protocol.hasCommand()) {
+        cmdCount++;
         Command cmd = protocol.takeCommand();
         switch (cmd.type) {
             case Command::STATE:
@@ -117,12 +148,15 @@ void loop() {
                 break;
         }
     }
+    uint32_t t2 = millis();
+    if (t2 - t1 > LOOP_WARN_MS) Serial.printf("[SLOW] Commands (%u): %ums\n", cmdCount, t2 - t1);
 
-    // Session carousel/housekeeping — prune sessions that haven't updated in 10 minutes
+    // --- Session carousel/housekeeping ---
     sessions.update(now);
-    sessions.pruneStale(now);
+    uint32_t t3 = millis();
+    if (t3 - t2 > LOOP_WARN_MS) Serial.printf("[SLOW] Sessions: %ums\n", t3 - t2);
 
-    // Touch -> send focus command
+    // --- Touch ---
     if (touch.update()) {
         const char* sid = sessions.getDisplayedSid();
         if (sid[0] != '\0' && protocol.isConnected()) {
@@ -133,8 +167,10 @@ void loop() {
             sessions.cycleNext();
         }
     }
+    uint32_t t4 = millis();
+    if (t4 - t3 > LOOP_WARN_MS) Serial.printf("[SLOW] Touch: %ums\n", t4 - t3);
 
-    // LED state — updated at most every 500ms to avoid unnecessary digitalWrite spam
+    // --- LED state ---
     if (now - lastLedUpdate >= 500) {
         lastLedUpdate = now;
         Session* priority = sessions.getPriority();
@@ -144,7 +180,6 @@ void loop() {
         } else if (displayed) {
             updateLED(displayed->state);
         } else if (!protocol.isConnected()) {
-            // Pulse blue while waiting for BLE connection (500ms gate = natural blink rate)
             static bool blinkState = false;
             blinkState = !blinkState;
             digitalWrite(PIN_LED_B, blinkState ? LOW : HIGH);
@@ -154,7 +189,25 @@ void loop() {
             updateLED(SessionState::DISCONNECTED);
         }
     }
+    uint32_t t5 = millis();
 
-    // Render display
+    // --- Render display ---
     display.update(now, &sessions, protocol.isConnected());
+    uint32_t t6 = millis();
+    if (t6 - t5 > LOOP_WARN_MS) Serial.printf("[SLOW] Display: %ums\n", t6 - t5);
+
+    // --- Total loop time ---
+    uint32_t loopTime = t6 - loopStart;
+    if (loopTime > LOOP_WARN_MS) {
+        Serial.printf("[SLOW] Loop total: %ums (ble=%u cmd=%u sess=%u touch=%u led=%u disp=%u)\n",
+                      loopTime, t1-t0, t2-t1, t3-t2, t4-t3, t5-t4, t6-t5);
+    }
+
+    // Periodic status report every 30 seconds
+    if (now - lastLoopReport >= 30000) {
+        lastLoopReport = now;
+        Serial.printf("[Status] uptime=%us loops=%u heap=%u sessions=%u ble=%s\n",
+                      now / 1000, loopCount, (unsigned)ESP.getFreeHeap(),
+                      sessions.count(), protocol.isConnected() ? "yes" : "no");
+    }
 }

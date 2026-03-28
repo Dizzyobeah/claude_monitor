@@ -1,16 +1,18 @@
 # Claude Monitor hook - forwards all Claude Code events to the monitor daemon
 # Registered as a hook for multiple Claude Code events.
 # Reads the hook event JSON from stdin and POSTs it to the daemon.
-# Auto-starts the daemon if it is not already running (requires CLAUDE_MONITOR_DIR env var).
+# Auto-starts the daemon if it is not already running.
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot  = Split-Path -Parent $ScriptDir
 
 $MonitorUrl = if ($env:CLAUDE_MONITOR_URL) { $env:CLAUDE_MONITOR_URL } else { 'http://localhost:7483/hook' }
 $HealthUrl  = $MonitorUrl -replace '/hook$', '/health'
 
 # --------------------------------------------------------------------------
 # Daemon auto-start
-# Probe /health before forwarding the event. If the daemon is not responding
-# and CLAUDE_MONITOR_DIR is set, start it silently in the background then
-# wait briefly for the HTTP port to bind.
+# Probe /health before forwarding the event. If the daemon is not responding,
+# start it silently in the background then wait briefly for the HTTP port to bind.
 # --------------------------------------------------------------------------
 $daemonAlive = $false
 try {
@@ -19,36 +21,31 @@ try {
 } catch {}
 
 if (-not $daemonAlive) {
-    $monitorDir = $env:CLAUDE_MONITOR_DIR
-    if ($monitorDir) {
-        $daemonDir = Join-Path $monitorDir 'daemon'
-        if (Test-Path $daemonDir) {
-            # Launch daemon fully detached from any console.
-            # Redirecting stdout/stderr to a log file causes Windows to spawn the
-            # process with no console attached at all — there is no window to
-            # accidentally close, and no CTRL_CLOSE_EVENT can reach the daemon.
-            $logFile = Join-Path $env:TEMP 'claude-monitor.log'
-            Start-Process -FilePath 'cmd.exe' `
-                -ArgumentList '/c', 'uv run claude-monitor' `
-                -WorkingDirectory $daemonDir `
-                -WindowStyle Hidden `
-                -RedirectStandardOutput $logFile `
-                -RedirectStandardError  $logFile `
-                -ErrorAction SilentlyContinue
-            # Wait for the HTTP server to bind (usually < 1s, 2s is generous)
-            $waited = 0
-            while ($waited -lt 2000) {
-                Start-Sleep -Milliseconds 200
-                $waited += 200
-                try {
-                    Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 1 -ErrorAction Stop | Out-Null
-                    break
-                } catch {}
-            }
+    $daemonDir = Join-Path $RepoRoot 'daemon'
+    if (Test-Path $daemonDir) {
+        # Launch daemon fully detached from any console.
+        # Redirecting stdout/stderr to a log file causes Windows to spawn the
+        # process with no console attached at all — there is no window to
+        # accidentally close, and no CTRL_CLOSE_EVENT can reach the daemon.
+        $logFile = Join-Path $env:TEMP 'claude-monitor.log'
+        Start-Process -FilePath 'cmd.exe' `
+            -ArgumentList '/c', 'uv run claude-monitor' `
+            -WorkingDirectory $daemonDir `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $logFile `
+            -RedirectStandardError  $logFile `
+            -ErrorAction SilentlyContinue
+        # Wait for the HTTP server to bind (usually < 1s, 2s is generous)
+        $waited = 0
+        while ($waited -lt 2000) {
+            Start-Sleep -Milliseconds 200
+            $waited += 200
+            try {
+                Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 1 -ErrorAction Stop | Out-Null
+                break
+            } catch {}
         }
     }
-    # If CLAUDE_MONITOR_DIR is not set we fall through silently — the POST
-    # below will simply fail, same behaviour as before auto-start was added.
 }
 # --------------------------------------------------------------------------
 

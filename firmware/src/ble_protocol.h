@@ -47,7 +47,7 @@ class BleProtocol {
 public:
     void begin();
     void update();                  // Call in loop() - processes queued commands
-    bool hasCommand() const { return _cmdHead != _cmdTail; }
+    bool hasCommand();  // protected by _rxMux — see ble_protocol.cpp
     Command takeCommand();
 
     void sendTap(const char* sid);
@@ -74,6 +74,7 @@ private:
 
     bool _connected = false;
     bool _justConnected = false;
+    bool _advertising = false;  // tracks whether BLE advertising is active
 
     // Queue for incoming raw BLE data (BLE callback runs on core 0).
     // Protected by _rxMux spinlock — safe across the two ESP32 cores.

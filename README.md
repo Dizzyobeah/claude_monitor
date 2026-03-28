@@ -38,15 +38,22 @@ pio run -e cyd_cap -t upload        # Capacitive touch (CST820)
 
 Power on the display with any USB power source. It will show a pulsing Bluetooth icon while waiting for a connection.
 
-### 2. Install hooks and start the daemon
+### 2. Install the Claude Code plugin
 
-Requires [uv](https://docs.astral.sh/uv/).
+Requires [uv](https://docs.astral.sh/uv/) and [Claude Code](https://claude.ai/code).
 
 ```bash
-# Register Claude Code hooks
+# Install as a Claude Code plugin (registers all hooks automatically)
 bash hooks/install.sh
 
-# Start the daemon (auto-discovers display via Bluetooth)
+# Or install directly via the CLI
+claude plugin marketplace add /path/to/claude_monitor
+claude plugin install claude-monitor
+```
+
+The daemon starts automatically on your first Claude Code session. You can also run it manually:
+
+```bash
 cd daemon
 uv run claude-monitor
 ```
@@ -102,12 +109,15 @@ asyncio-based, installed with `uv run claude-monitor`.
 
 ### Hook Script (`hooks/`)
 
-Single bash script registered for 12 Claude Code events. Reads the hook JSON from stdin and POSTs it to the daemon with TTY/PPID metadata for terminal identification.
+Packaged as a Claude Code plugin (`.claude-plugin/plugin.json`). A single bash script is registered for 12 Claude Code events via `hooks/hooks.json`. Reads the hook JSON from stdin and POSTs it to the daemon with TTY/PPID metadata for terminal identification.
 
 ## Uninstall
 
 ```bash
 bash hooks/uninstall.sh
+
+# Or directly via the CLI
+claude plugin uninstall claude-monitor
 ```
 
 ## Compatible hardware

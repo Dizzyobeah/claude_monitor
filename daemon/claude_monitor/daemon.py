@@ -4,6 +4,7 @@ import asyncio
 import logging
 import sys
 import time
+from typing import NamedTuple
 
 from aiohttp import web
 
@@ -30,6 +31,15 @@ SEND_DEBOUNCE_S = 0.15
 
 # States that must be sent immediately, without debounce.
 URGENT_STATES = {"PERMISSION", "INPUT", "ERROR"}
+
+
+class _PendingEntry(NamedTuple):
+    """Debounce state for a session waiting to be sent to the ESP32."""
+    state: str
+    label: str
+    idx: int
+    total: int
+    first_seen_at: float
 
 
 class ClaudeMonitorDaemon:
@@ -116,8 +126,7 @@ class ClaudeMonitorDaemon:
         # last_snapshot: what we last *sent* to the ESP32 for each session.
         last_snapshot: dict = {}
         # pending: candidate values not yet sent, waiting to stabilise.
-        # Value: (state, label, idx, total, first_seen_at)
-        pending: dict = {}
+        pending: dict[str, _PendingEntry] = {}
         # Track previous connected state so we can detect reconnection.
         was_connected: bool = False
 
@@ -198,11 +207,11 @@ class ClaudeMonitorDaemon:
                 prev_pending = pending.get(key)
                 if prev_pending is None or prev_pending[:4] != snapshot:
                     # New or changed value — start the debounce clock.
-                    pending[key] = (*snapshot, now)
+                    pending[key] = _PendingEntry(*snapshot, now)
                     continue
 
                 # Same value seen for long enough — ready to send.
-                if now - prev_pending[4] >= SEND_DEBOUNCE_S:
+                if now - prev_pending.first_seen_at >= SEND_DEBOUNCE_S:
                     pending.pop(key, None)
                     last_snapshot[key] = snapshot
                     batch.append(

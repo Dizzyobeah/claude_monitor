@@ -40,6 +40,8 @@ class TestUpdateSession:
             ("UserPromptSubmit", "THINKING"),
             ("PreToolUse", "TOOL_USE"),
             ("PostToolUse", "THINKING"),
+            ("SubagentStart", "THINKING"),
+            ("SubagentStop", "THINKING"),
             ("Stop", "INPUT"),
             ("PermissionRequest", "PERMISSION"),
             ("StopFailure", "ERROR"),
@@ -89,6 +91,20 @@ class TestUpdateSession:
         t = make_tracker()
         t.update_session("s1", "SessionStart", {})
         assert t.sessions["s1"].label == "unknown"
+
+    def test_label_for_root_cwd(self):
+        t = make_tracker()
+        t.update_session("s1", "SessionStart", {"cwd": "/"})
+        # os.path.basename("/") returns "" — should get "unknown" or ""
+        # Currently returns "" which is acceptable (root is an edge case)
+        assert t.sessions["s1"].label == ""
+
+    def test_label_exactly_20_chars_not_truncated(self):
+        t = make_tracker()
+        name = "a" * 20
+        t.update_session("s1", "SessionStart", {"cwd": f"/home/user/{name}"})
+        assert t.sessions["s1"].label == name
+        assert len(t.sessions["s1"].label) == 20
 
     def test_tty_and_ppid_stored_on_first_event(self):
         t = make_tracker()
@@ -256,9 +272,11 @@ class TestGetOrderedSessions:
 
     def test_within_same_tier_most_recent_first(self):
         t = make_tracker()
-        t.update_session("old", "SessionStart", {})  # INPUT, older
-        time.sleep(0.01)
-        t.update_session("new", "SessionStart", {})  # INPUT, newer
+        t.update_session("old", "SessionStart", {})
+        t.update_session("new", "SessionStart", {})
+        # Force ordering without relying on wall clock resolution
+        t.sessions["old"].last_update = 1000.0
+        t.sessions["new"].last_update = 2000.0
 
         ordered = t.get_ordered_sessions()
         assert ordered[0].session_id == "new"

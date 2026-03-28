@@ -24,6 +24,10 @@ namespace Colors {
     static constexpr uint16_t YELLOW_WARN   = 0xFFE0;  // Yellow
     static constexpr uint16_t PURPLE_TOOL   = 0x780F;  // Purple
     static constexpr uint16_t CYAN_INFO     = 0x07FF;  // Cyan
+    // Clawd character body colors (precomputed RGB565)
+    static constexpr uint16_t BODY_DEFAULT  = ((206 >> 3) << 11) | ((142 >> 2) << 5) | (107 >> 3);  // terracotta
+    static constexpr uint16_t BODY_TOOL     = ((190 >> 3) << 11) | ((120 >> 2) << 5) | (160 >> 3);  // purple tint
+    static constexpr uint16_t BODY_ERROR    = ((200 >> 3) << 11) | ((80  >> 2) << 5) | (70  >> 3);  // red tint
 }
 
 class Animation {
