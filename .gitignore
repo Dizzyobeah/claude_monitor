@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# PlatformIO
+.pio/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+daemon/.venv
+
+firmware/.pio/
+daemon/claude_monitor/__pycache__/
+
+# Claude
+.claude/agent-memory/
