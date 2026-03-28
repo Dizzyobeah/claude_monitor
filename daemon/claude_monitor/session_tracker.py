@@ -157,4 +157,5 @@ class SessionTracker:
         """Extract a short label from the working directory."""
         if not cwd:
             return "unknown"
-        return os.path.basename(cwd)[:20]
+        label = os.path.basename(cwd)
+        return label[:20] if label else "unknown"

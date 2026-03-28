@@ -6,6 +6,5 @@
     "name": "DizzyObeah"
   },
   "license": "MIT",
-  "keywords": ["hardware", "ble", "esp32", "status-display", "cyd"],
-  "hooks": "./hooks/hooks.json"
+  "keywords": ["hardware", "ble", "esp32", "status-display", "cyd"]
 }

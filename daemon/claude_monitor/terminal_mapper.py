@@ -76,8 +76,18 @@ MACOS_EXE_FRAGMENTS: dict[str, tuple[str, str]] = {
 # terminal wins; we achieve this by scanning the chain once, recording the
 # first terminal match and separately the first editor match, then returning
 # the terminal match if any, otherwise the editor match.
-_MACOS_TERMINAL_KEYS = frozenset(
-    {"iterm2", "ghostty", "wezterm-gui", "kitty", "alacritty", "warp", "terminal"}
+# All terminal emulator keys (as opposed to editors with integrated terminals).
+# Used to prefer a terminal over an editor when both appear in an ancestor chain.
+_TERMINAL_EMULATOR_KEYS = frozenset(
+    {
+        # macOS
+        "iterm2", "ghostty", "wezterm-gui", "kitty", "alacritty", "warp", "terminal",
+        # Linux
+        "gnome-terminal", "gnome-terminal-", "konsole", "xterm",
+        "xfce4-terminal", "tilix", "foot", "hyper",
+        # Windows
+        "windowsterminal", "cmd", "pwsh", "powershell",
+    }
 )
 
 
@@ -179,25 +189,7 @@ class TerminalMapper:
             if match:
                 key, display_name = match
                 ref = WindowRef(app=key, app_name=display_name, pid=ancestor.pid)
-                if key in _MACOS_TERMINAL_KEYS or key in (
-                    "windowsterminal",
-                    "konsole",
-                    "gnome-terminal",
-                    "gnome-terminal-",
-                    "xfce4-terminal",
-                    "tilix",
-                    "foot",
-                    "hyper",
-                    "alacritty",
-                    "kitty",
-                    "wezterm-gui",
-                    "ghostty",
-                    "warp",
-                    "xterm",
-                    "cmd",
-                    "pwsh",
-                    "powershell",
-                ):
+                if key in _TERMINAL_EMULATOR_KEYS:
                     # It's a terminal emulator — stop immediately.
                     terminal_ref = ref
                     break
@@ -241,8 +233,8 @@ class TerminalMapper:
                             )
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("TTY scan failed: %s", exc)
 
         return None
 
@@ -274,7 +266,7 @@ class TerminalMapper:
             for fragment, (key, display_name) in MACOS_EXE_FRAGMENTS.items():
                 if fragment in exe:
                     ref = WindowRef(app=key, app_name=display_name, pid=ancestor.pid)
-                    if key in _MACOS_TERMINAL_KEYS:
+                    if key in _TERMINAL_EMULATOR_KEYS:
                         terminal_ref = ref
                         # Terminal found — no need to keep looking.
                         break

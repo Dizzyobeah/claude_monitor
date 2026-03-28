@@ -126,9 +126,7 @@ class WindowFocus:
         user32.ShowWindow(hwnd, 9)
 
         # Get the thread of the window we want to focus
-        target_tid = ctypes.wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(ctypes.wintypes.DWORD()))
-        # Re-call without the PID out-param to get just the thread ID
+        # Get the thread ID of the window we want to focus
         target_tid_val = user32.GetWindowThreadProcessId(hwnd, None)
 
         # Get the thread of the current foreground window

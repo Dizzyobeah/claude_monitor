@@ -20,7 +20,7 @@ if (-not $claudeCmd) {
 }
 
 # Register the repo as a local marketplace and install the plugin
-& claude plugin marketplace add $RepoRoot
+& claude plugin marketplace add "$RepoRoot"
 & claude plugin install claude-monitor
 
 Write-Host ""

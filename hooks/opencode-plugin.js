@@ -21,7 +21,7 @@ async function notify(body) {
       "Content-Type": "application/json",
       // X-PPID lets the daemon walk the process tree to find the terminal window.
       // process.ppid is available in Node.js on all platforms (Linux, macOS, Windows).
-      "X-PPID": String(process.pid ?? ""),
+      "X-PPID": String(process.ppid ?? ""),
       // X-TTY is only meaningful on Unix; send "windows" on Windows so the daemon
       // can distinguish "no TTY info" from "running on Windows".
       "X-TTY": process.platform === "win32" ? "windows" : "",

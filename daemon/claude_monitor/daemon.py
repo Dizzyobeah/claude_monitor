@@ -53,6 +53,7 @@ class ClaudeMonitorDaemon:
         # resend all sessions on the next tick, ensuring the display is in sync
         # even if the initial _send_full_state write was dropped.
         self._force_resync: bool = False
+        self._shutting_down: bool = False
 
     async def run(self) -> None:
         """Start all daemon components as independent tasks."""
@@ -75,6 +76,11 @@ class ClaudeMonitorDaemon:
             done, pending = await asyncio.wait(
                 tasks, return_when=asyncio.FIRST_COMPLETED
             )
+            # If housekeeping triggered shutdown, don't restart anything
+            if self._shutting_down:
+                for t in pending:
+                    t.cancel()
+                return
             for task in done:
                 name = task.get_name()
                 exc = task.exception() if not task.cancelled() else None
@@ -158,6 +164,10 @@ class ClaudeMonitorDaemon:
                 self._force_resync = False
                 last_snapshot.clear()
                 pending.clear()
+
+            # Process deferred session removals so the grace period is
+            # honoured promptly (housekeeping only runs every 30s).
+            self.tracker.prune_stale()
 
             # Collect all outgoing messages and send them in one BLE write.
             # The firmware's _rxBuf is a single-slot buffer: if the daemon sends
@@ -250,14 +260,7 @@ class ClaudeMonitorDaemon:
             self.tracker.prune_stale()
             if self.tracker.is_idle:
                 log.info("All sessions ended — shutting down.")
-                # Cancel every other running task so that run() unwinds cleanly.
-                # Using loop.stop() inside a coroutine causes run_until_complete()
-                # to raise RuntimeError when the finally block tries to gather
-                # the still-pending tasks.
-                current = asyncio.current_task()
-                for task in asyncio.all_tasks():
-                    if task is not current:
-                        task.cancel()
+                self._shutting_down = True
                 return
 
     async def _handle_esp32_message(self, msg: dict) -> None:
