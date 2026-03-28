@@ -1,5 +1,6 @@
 #include "ble_protocol.h"
 #include <BLESecurity.h>
+#include <esp_gap_ble_api.h>
 
 BleProtocol* g_bleProtocol = nullptr;
 
@@ -11,6 +12,35 @@ class ServerCallbacks : public BLEServerCallbacks {
     }
     void onDisconnect(BLEServer* server) override {
         if (g_bleProtocol) g_bleProtocol->_onDisconnect();
+    }
+};
+
+// Security callback: display a 6-digit passkey on the CYD screen for the user
+// to enter on their computer during BLE pairing.
+class SecurityCallbacks : public BLESecurityCallbacks {
+    uint32_t onPassKeyRequest() override {
+        // Not used in display-only mode
+        return 0;
+    }
+    void onPassKeyNotify(uint32_t passkey) override {
+        Serial.printf("[BLE] Passkey for pairing: %06u\n", passkey);
+        if (g_bleProtocol) {
+            g_bleProtocol->_displayPasskey = passkey;
+            g_bleProtocol->_passkeyActive = true;
+        }
+    }
+    bool onConfirmPIN(uint32_t pin) override {
+        return true;
+    }
+    bool onSecurityRequest() override {
+        return true;
+    }
+    void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) override {
+        Serial.printf("[BLE] Auth complete: %s\n", cmpl.success ? "success" : "failed");
+        if (g_bleProtocol) {
+            g_bleProtocol->_passkeyActive = false;
+            g_bleProtocol->_displayPasskey = 0;
+        }
     }
 };
 
@@ -65,10 +95,13 @@ void BleProtocol::begin() {
     // Request a larger MTU so our JSON messages fit in one packet
     BLEDevice::setMTU(256);
 
-    // "Just works" bonding — no PIN, works on Windows/macOS/Linux.
+    // Passkey display bonding — ESP32 shows a 6-digit PIN on the CYD screen,
+    // user enters it on their computer during pairing. Prevents unauthorized
+    // nearby devices from connecting.
+    BLEDevice::setSecurityCallbacks(new SecurityCallbacks());
     BLESecurity* security = new BLESecurity();
     security->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
-    security->setCapability(ESP_IO_CAP_NONE);
+    security->setCapability(ESP_IO_CAP_OUT);  // Display-only: show passkey on screen
     security->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
     security->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
 
@@ -198,16 +231,25 @@ bool BleProtocol::parseLine(const char* line) {
     if (strcmp(cmd, "state") == 0) {
         parsed.type = Command::STATE;
         const char* sid = doc["sid"];
-        if (sid) strncpy(parsed.sid, sid, 5);
+        if (sid) {
+            strncpy(parsed.sid, sid, sizeof(parsed.sid) - 1);
+            parsed.sid[sizeof(parsed.sid) - 1] = '\0';
+        }
         parsed.state = stateFromString(doc["state"]);
         const char* label = doc["label"];
-        if (label) strncpy(parsed.label, label, 20);
+        if (label) {
+            strncpy(parsed.label, label, sizeof(parsed.label) - 1);
+            parsed.label[sizeof(parsed.label) - 1] = '\0';
+        }
         parsed.idx   = doc["idx"] | 0;
         parsed.total = doc["total"] | 1;
     } else if (strcmp(cmd, "remove") == 0) {
         parsed.type = Command::REMOVE;
         const char* sid = doc["sid"];
-        if (sid) strncpy(parsed.sid, sid, 5);
+        if (sid) {
+            strncpy(parsed.sid, sid, sizeof(parsed.sid) - 1);
+            parsed.sid[sizeof(parsed.sid) - 1] = '\0';
+        }
     } else if (strcmp(cmd, "ping") == 0) {
         parsed.type = Command::PING;
         sendJson("{\"cmd\":\"pong\"}");
@@ -216,6 +258,12 @@ bool BleProtocol::parseLine(const char* line) {
     } else if (strcmp(cmd, "config") == 0) {
         parsed.type = Command::CONFIG;
         parsed.brightness = doc["brightness"] | 255;
+        parsed.theme = doc["theme"] | 0xFF;  // 0xFF = no change
+    } else if (strcmp(cmd, "ota_begin") == 0) {
+        parsed.type = Command::OTA_BEGIN;
+        parsed.otaSize = doc["size"] | 0;
+    } else if (strcmp(cmd, "ota_end") == 0) {
+        parsed.type = Command::OTA_END;
     } else {
         return false;
     }
@@ -226,6 +274,8 @@ bool BleProtocol::parseLine(const char* line) {
         // Ring is full — advance head to make room (oldest command dropped)
         Serial.println("[BLE] Warning: command ring full, dropping oldest command");
         _cmdHead = (_cmdHead + 1) % CMD_RING_SIZE;
+        // Notify daemon so it can force a full-state resend
+        sendJson("{\"cmd\":\"overflow\"}");
     }
     _cmdRing[_cmdTail] = parsed;
     _cmdTail = (_cmdTail + 1) % CMD_RING_SIZE;

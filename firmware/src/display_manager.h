@@ -15,6 +15,7 @@ class DisplayManager {
 public:
     void begin(LGFX* lcd);
     void update(uint32_t now, SessionStore* sessions, bool bleConnected);
+    void drawPasskeyOverlay(uint32_t passkey);
 
 private:
     LGFX* _lcd = nullptr;
@@ -27,7 +28,7 @@ private:
 
     // Tracks the last full-screen idle/disconnected draw so we only repaint on
     // transitions — same pattern as footer, avoids per-frame fillScreen flicker.
-    enum class IdleScreen { NONE, WAITING_BLE, NO_SESSIONS };
+    enum class IdleScreen { NONE, WAITING_BLE, NO_SESSIONS, PASSKEY };
     IdleScreen _lastIdleScreen = IdleScreen::NONE;
 
     // Phase accumulator for idle/disconnected screen animations.

@@ -13,23 +13,37 @@ void DisplayManager::begin(LGFX* lcd) {
     // Only allocate the dirty band (rows ANIM_DIRTY_Y0..Y1) instead of the full
     // 240-row animation zone — cuts the buffer from 115KB to ~79KB, which fits
     // in the largest contiguous heap block after LovyanGFX/WiFi allocations.
-    static constexpr int16_t SPRITE_H = ANIM_DIRTY_Y1 - ANIM_DIRTY_Y0;
+    // If allocation fails, retry with progressively smaller band heights.
+    static constexpr int16_t FULL_SPRITE_H = ANIM_DIRTY_Y1 - ANIM_DIRTY_Y0;
     Serial.printf("[Display] Free heap: %u bytes, max contiguous: %u bytes\n",
                   (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
-    Serial.printf("[Display] Requesting sprite %dx%d = %u bytes\n",
-                  SCREEN_W, SPRITE_H, (unsigned)(SCREEN_W * SPRITE_H * 2));
-    _canvas = new LGFX_Sprite(_lcd);
-    _canvas->setColorDepth(16);
-    void* buf = _canvas->createSprite(SCREEN_W, SPRITE_H);
+
+    void* buf = nullptr;
+    int16_t spriteH = FULL_SPRITE_H;
+
+    // Try full band first, then halve until allocation succeeds or band is too small
+    while (spriteH >= 40 && !buf) {
+        Serial.printf("[Display] Trying sprite %dx%d = %u bytes\n",
+                      SCREEN_W, spriteH, (unsigned)(SCREEN_W * spriteH * 2));
+        _canvas = new LGFX_Sprite(_lcd);
+        _canvas->setColorDepth(16);
+        buf = _canvas->createSprite(SCREEN_W, spriteH);
+        if (!buf) {
+            Serial.printf("[Display] Sprite %dx%d failed — trying smaller\n", SCREEN_W, spriteH);
+            delete _canvas;
+            _canvas = nullptr;
+            spriteH = spriteH * 3 / 4;  // Reduce by 25% each attempt
+        }
+    }
+
     Serial.printf("[Display] Free heap after alloc: %u bytes\n", (unsigned)ESP.getFreeHeap());
 
     if (!buf) {
-        Serial.println("[Display] ERROR: sprite allocation failed — not enough contiguous heap!");
-        delete _canvas;
+        Serial.println("[Display] ERROR: all sprite allocations failed — rendering direct to LCD");
         _canvas = nullptr;
     } else {
         Serial.printf("[Display] Sprite OK (%dx%d 16-bit, %u bytes)\n",
-                      SCREEN_W, SPRITE_H, (unsigned)(SCREEN_W * SPRITE_H * 2));
+                      SCREEN_W, spriteH, (unsigned)(SCREEN_W * spriteH * 2));
         _canvas->fillScreen(Colors::BG_DARK);
     }
 
@@ -235,6 +249,40 @@ void DisplayManager::drawWaitingForBle() {
     _lcd->drawString("Bluetooth advertising...", SCREEN_W / 2, SCREEN_H / 2 + 50);
     _lcd->drawString("Run claude-monitor on",    SCREEN_W / 2, SCREEN_H / 2 + 70);
     _lcd->drawString("your computer to connect", SCREEN_W / 2, SCREEN_H / 2 + 85);
+}
+
+// ---------------------------------------------------------------------------
+// Passkey overlay — shown during BLE pairing so user can enter PIN
+// ---------------------------------------------------------------------------
+void DisplayManager::drawPasskeyOverlay(uint32_t passkey) {
+    _lcd->fillScreen(Colors::BG_DARK);
+
+    _lcd->setTextColor(Colors::CLAUDE_ORANGE);
+    _lcd->setTextSize(2);
+    _lcd->setTextDatum(lgfx::middle_center);
+    _lcd->drawString("BLE Pairing", SCREEN_W / 2, SCREEN_H / 2 - 60);
+
+    _lcd->setTextColor(Colors::TEXT_PRIMARY);
+    _lcd->setTextSize(1);
+    _lcd->drawString("Enter this passkey on", SCREEN_W / 2, SCREEN_H / 2 - 30);
+    _lcd->drawString("your computer:", SCREEN_W / 2, SCREEN_H / 2 - 15);
+
+    // Large passkey display
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%06u", passkey);
+    _lcd->setTextColor(Colors::CYAN_INFO);
+    _lcd->setTextSize(4);
+    _lcd->setTextDatum(lgfx::middle_center);
+    _lcd->drawString(buf, SCREEN_W / 2, SCREEN_H / 2 + 30);
+
+    _lcd->setTextColor(Colors::TEXT_DIM);
+    _lcd->setTextSize(1);
+    _lcd->setTextDatum(lgfx::middle_center);
+    _lcd->drawString("Passkey expires after pairing", SCREEN_W / 2, SCREEN_H / 2 + 70);
+
+    // Mark screen state so normal display forces a full redraw after pairing
+    _lastIdleScreen = IdleScreen::PASSKEY;
+    _lastFooterState = SessionState::DISCONNECTED;
 }
 
 // ---------------------------------------------------------------------------

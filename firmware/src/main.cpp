@@ -5,6 +5,7 @@
 // Touch to focus the terminal window needing attention.
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <esp_task_wdt.h>
 #include <esp_system.h>
 #include "board/board_config.h"
@@ -12,12 +13,17 @@
 #include "session_store.h"
 #include "display_manager.h"
 #include "touch_handler.h"
+#include "theme.h"
+#include "ota.h"
 
 static LGFX lcd;
 static BleProtocol protocol;
 static SessionStore sessions;
 static DisplayManager display;
 static TouchHandler touch;
+static Preferences prefs;
+static ThemeId activeTheme = ThemeId::THEME_DEFAULT;
+static OtaManager ota;
 
 // Last time the RGB LED state was updated. Gated at 500ms to avoid hammering
 // digitalWrite on every loop() iteration (which can run thousands of times/sec).
@@ -77,6 +83,15 @@ void setup() {
         default:               Serial.println("(unknown)"); break;
     }
     Serial.printf("[Boot] Free heap: %u bytes\n", (unsigned)ESP.getFreeHeap());
+
+    // Load persisted theme from NVS
+    prefs.begin("claude-mon", false);
+    uint8_t savedTheme = prefs.getUChar("theme", 0);
+    if (savedTheme < NUM_THEMES) {
+        activeTheme = static_cast<ThemeId>(savedTheme);
+    }
+    prefs.end();
+    Serial.printf("[Boot] Theme: %u\n", static_cast<unsigned>(activeTheme));
 
     // Display first so user sees something immediately
     display.begin(&lcd);
@@ -143,6 +158,21 @@ void loop() {
                 break;
             case Command::CONFIG:
                 lcd.setBrightness(cmd.brightness);
+                if (cmd.theme < NUM_THEMES) {
+                    activeTheme = static_cast<ThemeId>(cmd.theme);
+                    prefs.begin("claude-mon", false);
+                    prefs.putUChar("theme", cmd.theme);
+                    prefs.end();
+                    Serial.printf("[Config] Theme changed to %u\n", cmd.theme);
+                }
+                break;
+            case Command::OTA_BEGIN:
+                if (cmd.otaSize > 0) {
+                    ota.beginOta(cmd.otaSize);
+                }
+                break;
+            case Command::OTA_END:
+                ota.finishOta();
                 break;
             default:
                 break;
@@ -192,7 +222,12 @@ void loop() {
     uint32_t t5 = millis();
 
     // --- Render display ---
-    display.update(now, &sessions, protocol.isConnected());
+    // Show passkey overlay during BLE pairing, otherwise normal display
+    if (protocol.isPasskeyActive()) {
+        display.drawPasskeyOverlay(protocol.getPasskey());
+    } else {
+        display.update(now, &sessions, protocol.isConnected());
+    }
     uint32_t t6 = millis();
     if (t6 - t5 > LOOP_WARN_MS) Serial.printf("[SLOW] Display: %ums\n", t6 - t5);
 
