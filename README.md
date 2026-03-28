@@ -62,16 +62,20 @@ uv run claude-monitor
 
 Start any Claude Code session. The display updates automatically.
 
-## Display states
+## Display States
 
-| State | Animation | Trigger |
-|-------|-----------|---------|
-| IDLE | Slow pulsing blue circle | Session started, waiting for input |
-| THINKING | Three orbiting orange dots | User submitted a prompt |
-| TOOL_USE | Rotating purple gear | Claude is executing a tool |
-| PERMISSION | Red pulsing border + bell | Waiting for permission approval |
-| INPUT | Blinking cursor in terminal box | Claude finished, waiting for next prompt |
-| ERROR | Red X with shake effect | API error or tool failure |
+The display shows a pixel-art character whose expression, color, and animation change to reflect what Claude Code is doing:
+
+| State | Description | Screenshot |
+|-------|-------------|------------|
+| **Waiting for BLE** | Pulsing Bluetooth icon — waiting for daemon to connect | ![Waiting for BLE](images/01_waiting_ble.jpg) |
+| **No Sessions** | BLE connected, waiting for a Claude Code session to start | ![No Sessions](images/02_no_sessions.jpg) |
+| **IDLE** | Session started, Claude is waiting for your input | ![Idle](images/03_idle.jpg) |
+| **THINKING** | You submitted a prompt — Claude is thinking | ![Thinking](images/04_thinking.jpg) |
+| **TOOL_USE** | Claude is executing a tool (file edits, bash, etc.) | ![Tool Use](images/05_tool_use.jpg) |
+| **PERMISSION** | Waiting for you to approve a permission request — tap to focus | ![Permission](images/06_permission.jpg) |
+| **INPUT** | Claude finished, waiting for your next prompt — tap to focus | ![Input Needed](images/07_input_needed.jpg) |
+| **ERROR** | API error or tool failure | ![Error](images/08_error.jpg) |
 
 The RGB LED on the board mirrors the current state color.
 
@@ -130,3 +134,17 @@ Any ESP32-based Cheap Yellow Display with a 240x320 TFT and touch:
 | ESP32-2432S028R | ILI9341 | XPT2046 | `cyd_standard` |
 | ESP32-2432S028 V2 | ST7789 | XPT2046 | `cyd_v2` |
 | ESP32-2432S028C | ILI9341 | CST820 | `cyd_cap` |
+
+### Board
+
+This project uses the **E32R28T** (LCDWIKI) board. [Purchase on Amazon](https://www.amazon.se/-/en/dp/B0DRYP7M4K?ref=ppx_yo2ov_dt_b_fed_asin_title) | [Alternate listing](https://www.amazon.se/dp/B0CVQ8LV5W?ref_=pe_111951831_1111173731_i_fed_asin_title&th=1)
+
+| Front | Back |
+|-------|------|
+| ![E32R28T Front](images/E32R28T_front.jpg) | ![E32R28T Back](images/E32R28T_back.jpg) |
+
+### Case
+
+The display fits in the [Aura Smart Weather Forecast Display](https://makerworld.com/en/models/1382304-aura-smart-weather-forecast-display#profileId-1441764) case from MakerWorld.
+
+![Aura Case](images/aura%20main.png)
