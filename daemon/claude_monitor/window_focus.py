@@ -19,6 +19,45 @@ _SAFE_APP_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-\.]+$")
 class WindowFocus:
     """Activate terminal windows via the best available method for the platform."""
 
+    async def trigger_dictation(self) -> bool:
+        """Trigger macOS dictation by simulating the Globe/fn key double-press.
+
+        Requires Accessibility permission for the daemon process in
+        System Settings > Privacy & Security > Accessibility.
+        """
+        if sys.platform != "darwin":
+            log.warning("Dictation trigger only supported on macOS")
+            return False
+
+        # key code 63 = fn/Globe key on macOS
+        script = (
+            'tell application "System Events"\n'
+            "    key code 63\n"
+            "    delay 0.05\n"
+            "    key code 63\n"
+            "end tell"
+        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "osascript",
+                "-e",
+                script,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            if proc.returncode != 0:
+                log.warning("Dictation trigger failed: %s", stderr.decode().strip())
+                return False
+            log.info("Dictation triggered via fn-fn")
+            return True
+        except asyncio.TimeoutError:
+            log.warning("Dictation trigger timed out")
+            return False
+        except FileNotFoundError:
+            log.error("osascript not found")
+            return False
+
     async def focus(self, ref: WindowRef) -> bool:
         """Bring the terminal window to the front. Returns True on success."""
         if sys.platform == "darwin":

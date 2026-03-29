@@ -53,6 +53,7 @@ public:
     Command takeCommand();
 
     void sendTap(const char* sid);
+    void sendDictate(const char* sid);
     void sendReady();
 
     bool isConnected() const { return _connected; }

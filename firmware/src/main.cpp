@@ -187,7 +187,8 @@ void loop() {
     if (t3 - t2 > LOOP_WARN_MS) Serial.printf("[SLOW] Sessions: %ums\n", t3 - t2);
 
     // --- Touch ---
-    if (touch.update()) {
+    TouchEvent touchEvt = touch.update();
+    if (touchEvt == TouchEvent::TAP) {
         const char* sid = sessions.getDisplayedSid();
         if (sid[0] != '\0' && protocol.isConnected()) {
             protocol.sendTap(sid);
@@ -196,11 +197,22 @@ void loop() {
         if (current && !stateNeedsAttention(current->state) && sessions.count() > 1) {
             sessions.cycleNext();
         }
+    } else if (touchEvt == TouchEvent::LONG_PRESS) {
+        const char* sid = sessions.getDisplayedSid();
+        if (sid[0] != '\0' && protocol.isConnected()) {
+            protocol.sendDictate(sid);
+        }
     }
     uint32_t t4 = millis();
     if (t4 - t3 > LOOP_WARN_MS) Serial.printf("[SLOW] Touch: %ums\n", t4 - t3);
 
     // --- LED state ---
+    // Override LED to magenta during long-press hold for visual feedback
+    if (touch.isLongPressActive()) {
+        digitalWrite(PIN_LED_R, LOW);   // Magenta (R+B)
+        digitalWrite(PIN_LED_G, HIGH);
+        digitalWrite(PIN_LED_B, LOW);
+    } else
     if (now - lastLedUpdate >= 500) {
         lastLedUpdate = now;
         Session* priority = sessions.getPriority();
