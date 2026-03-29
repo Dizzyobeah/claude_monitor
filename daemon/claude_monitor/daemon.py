@@ -315,6 +315,8 @@ class ClaudeMonitorDaemon:
 
         if cmd == "tap":
             await self._handle_tap(msg.get("sid", ""))
+        elif cmd == "dictate":
+            await self._handle_dictate(msg.get("sid", ""))
         elif cmd == "ready":
             log.info("ESP32 display is ready — sending full state")
             await self._send_full_state()
@@ -407,6 +409,42 @@ class ClaudeMonitorDaemon:
                 return
 
         log.warning("Tap for unknown session: %s", sid)
+
+    async def _handle_dictate(self, sid: str) -> None:
+        """Handle a long-press — focus terminal then trigger macOS dictation."""
+        if not sid:
+            return
+
+        for session_id, info in self.tracker.sessions.items():
+            if short_sid(session_id) == sid:
+                log.info("Dictate on session %s (%s)", sid, info.label)
+
+                ref = info._cached_terminal
+                if ref is None:
+                    ref = self.terminal_mapper.find_terminal(
+                        ppid=info.ppid,
+                        tty=info.tty,
+                    )
+                    if ref:
+                        info._cached_terminal = ref
+
+                if ref:
+                    await self.window_focus.focus(ref)
+                    await asyncio.sleep(0.2)  # let window come to front
+                    success = await self.window_focus.trigger_dictation()
+                    if not success:
+                        log.warning("Dictation trigger failed for session %s", sid)
+                else:
+                    log.warning(
+                        "Could not find terminal for dictate session %s "
+                        "(ppid=%r tty=%r)",
+                        sid,
+                        info.ppid,
+                        info.tty,
+                    )
+                return
+
+        log.warning("Dictate for unknown session: %s", sid)
 
     async def _send_full_state(self) -> None:
         """Send complete session state to ESP32 (called on reconnect/ready)."""

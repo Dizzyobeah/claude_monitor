@@ -294,6 +294,12 @@ void BleProtocol::sendTap(const char* sid) {
     sendJson(buf);
 }
 
+void BleProtocol::sendDictate(const char* sid) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"cmd\":\"dictate\",\"sid\":\"%s\"}", sid);
+    sendJson(buf);
+}
+
 void BleProtocol::sendReady() {
     sendJson("{\"cmd\":\"ready\"}");
 }
