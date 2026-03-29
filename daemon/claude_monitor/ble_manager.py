@@ -3,7 +3,8 @@
 import asyncio
 import json
 import logging
-from typing import Callable, Coroutine, Any
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from bleak import BleakClient, BleakScanner
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -17,16 +18,18 @@ SERVICE_UUID = "c0de0000-cafe-babe-c0de-000000000001"
 CHAR_RX_UUID = "c0de0001-cafe-babe-c0de-000000000001"  # We write commands here
 CHAR_TX_UUID = "c0de0002-cafe-babe-c0de-000000000001"  # We receive notifications here
 
-RECONNECT_DELAY = 3.0  # Seconds between reconnection attempts
+RECONNECT_DELAY_INIT = 3.0  # Initial seconds between reconnection attempts
+RECONNECT_DELAY_MAX = 30.0  # Maximum backoff cap
+RECONNECT_BACKOFF_FACTOR = 2.0  # Multiply delay by this on each failure
 CONNECT_TIMEOUT = 20.0  # Seconds to wait for a connection
 SCAN_TIMEOUT = 10.0  # Seconds per scan attempt
 
 
 class BleManager:
-    def __init__(self):
+    def __init__(self) -> None:
         self._client: BleakClient | None = None
         self._connected = False
-        self._on_message: Callable[[dict], Coroutine[Any, Any, None]] | None = None
+        self._on_message: Callable[[dict[str, Any]], Coroutine[Any, Any, None]] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         # Signals the _connect coroutine to abort when a send error is detected
         self._force_disconnect: asyncio.Event | None = None
@@ -36,11 +39,12 @@ class BleManager:
         return self._connected
 
     async def run(
-        self, on_message: Callable[[dict], Coroutine[Any, Any, None]]
+        self, on_message: Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
     ) -> None:
         """Main loop: scan for display, connect, handle notifications, reconnect."""
         self._on_message = on_message
         self._loop = asyncio.get_running_loop()
+        delay = RECONNECT_DELAY_INIT
 
         while True:
             try:
@@ -48,26 +52,30 @@ class BleManager:
                 if not device:
                     log.info(
                         "No Claude Monitor display found — retrying in %.0fs...",
-                        RECONNECT_DELAY,
+                        delay,
                     )
-                    await asyncio.sleep(RECONNECT_DELAY)
+                    await asyncio.sleep(delay)
+                    delay = min(delay * RECONNECT_BACKOFF_FACTOR, RECONNECT_DELAY_MAX)
                     continue
 
                 await self._connect(device)
+                # Connection succeeded then ended — reset backoff for next attempt
+                delay = RECONNECT_DELAY_INIT
 
             except Exception as e:
                 log.warning(
                     "BLE error: %s (%s) — reconnecting in %.0fs...",
                     e or "(no message)",
                     type(e).__name__,
-                    RECONNECT_DELAY,
+                    delay,
                 )
 
             # Always clean up state before retrying
             self._connected = False
             self._client = None
             self._force_disconnect = None
-            await asyncio.sleep(RECONNECT_DELAY)
+            await asyncio.sleep(delay)
+            delay = min(delay * RECONNECT_BACKOFF_FACTOR, RECONNECT_DELAY_MAX)
 
     async def send(self, data: str) -> None:
         """Send a JSON message to the ESP32 display via BLE write."""
@@ -169,10 +177,10 @@ class BleManager:
 
         try:
             await asyncio.wait_for(client.connect(), timeout=CONNECT_TIMEOUT)
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as e:
             raise Exception(
                 f"Connection to {device.address} timed out after {CONNECT_TIMEOUT:.0f}s"
-            )
+            ) from e
 
         self._client = client
         self._connected = True

@@ -1,13 +1,10 @@
 """Tests for SessionTracker: state machine, priority ordering, pruning, removal."""
 
 import time
-import pytest
+
 from claude_monitor.session_tracker import (
     SessionTracker,
-    SessionInfo,
-    SESSION_REMOVAL_GRACE_S,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -260,7 +257,6 @@ class TestGetOrderedSessions:
         t.update_session("s4", "StopFailure", {})  # ERROR
 
         ordered = t.get_ordered_sessions()
-        states = [s.state for s in ordered]
         # All attention states before THINKING
         attention = {"PERMISSION", "INPUT", "ERROR"}
         first_non_attention = next(

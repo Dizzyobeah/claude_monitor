@@ -1,18 +1,34 @@
 """Entry point: python -m claude_monitor"""
 
 import asyncio
+import json as json_mod
 import logging
+import os
 import signal
 import sys
+import time
+from typing import Any
 
 from .config import Config
 from .daemon import ClaudeMonitorDaemon
-from .lock import acquire_lock
+from .lock import STATE_DIR, acquire_lock
+
+
+class _JsonFormatter(logging.Formatter):
+    """Emit one JSON object per log line for machine-parseable output."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return json_mod.dumps({
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(record.created)),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        })
 
 log = logging.getLogger(__name__)
 
 
-def _make_exception_handler():
+def _make_exception_handler() -> Any:
     """Return an asyncio exception handler that suppresses known shutdown noise.
 
     Two harmless error classes are demoted from ERROR to DEBUG:
@@ -26,7 +42,7 @@ def _make_exception_handler():
       AppRunner is torn down mid-accept during an abrupt shutdown.
     """
 
-    def handler(loop, context):
+    def handler(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
         exc = context.get("exception")
         msg = context.get("message", "")
         if isinstance(exc, OSError) and getattr(exc, "winerror", None) == 64:
@@ -46,16 +62,50 @@ def _make_exception_handler():
 
 
 def main() -> None:
+    config = Config.from_args()
+
+    # Handle subcommands that don't need the daemon
+    if config.subcommand == "status":
+        from .cli import status
+
+        status(f"http://localhost:{config.http_port}")
+        return
+
+    if config.subcommand == "ota":
+        from .cli import ota
+
+        ota(config.ota_firmware, f"http://localhost:{config.http_port}")
+        return
+
     # Acquire a single-instance lock before doing anything else.
     # If another daemon process is already running this exits(0) immediately.
     acquire_lock()
 
-    config = Config.from_args()
+    # Log to ~/.local/state/claude-monitor/ with restricted permissions
+    # instead of world-readable /tmp to avoid leaking session activity.
+    os.makedirs(STATE_DIR, exist_ok=True)
+    log_path = os.path.join(STATE_DIR, "daemon.log")
+    if config.json_log:
+        fmt: logging.Formatter = _JsonFormatter()
+    else:
+        fmt = logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"
+        )
+
+    log_handler = logging.FileHandler(log_path)
+    log_handler.setFormatter(fmt)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(fmt)
+
+    # Restrict log file to owner-only read/write
+    try:
+        os.chmod(log_path, 0o600)
+    except OSError:
+        pass
 
     logging.basicConfig(
         level=logging.DEBUG if config.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
+        handlers=[log_handler, stream_handler],
     )
     daemon = ClaudeMonitorDaemon(config)
 
@@ -68,6 +118,16 @@ def main() -> None:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: loop.stop())
 
+        # SIGHUP: graceful reload — reset session tracker and force BLE resync
+        # without dropping the BLE connection or restarting the HTTP server.
+        def _handle_sighup() -> None:
+            log.info("SIGHUP received — reloading session state")
+            daemon.tracker.sessions.clear()
+            daemon.tracker.ever_had_session = False
+            daemon._force_resync = True
+
+        loop.add_signal_handler(signal.SIGHUP, _handle_sighup)
+
     try:
         loop.run_until_complete(daemon.run())
     except (KeyboardInterrupt, RuntimeError):
@@ -78,9 +138,17 @@ def main() -> None:
         pass
     finally:
         # Cancel all pending tasks so coroutines can clean up (e.g. runner.cleanup).
-        pending = asyncio.all_tasks(loop)
-        if pending:
-            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        try:
+            pending = asyncio.all_tasks(loop)
+            if pending:
+                for task in pending:
+                    task.cancel()
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+        except RuntimeError:
+            # Loop already closed or no running loop — nothing to clean up
+            pass
         loop.close()
         logging.info("Claude Monitor stopped.")
 

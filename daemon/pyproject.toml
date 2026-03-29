@@ -1,6 +1,6 @@
 [project]
 name = "claude-monitor"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Host daemon for Claude Monitor ESP32 display"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,15 +13,61 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
 ]
 
 [project.scripts]
 claude-monitor = "claude_monitor.__main__:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+raw-options.root = ".."
+
+[tool.hatch.build.hooks.vcs]
+version-file = "claude_monitor/_version.py"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "S",    # flake8-bandit (security)
+]
+ignore = [
+    "S603",   # subprocess call with non-constant args (we need this for osascript/xdotool)
+    "S607",   # starting process with partial path
+    "S110",   # try-except-pass (used for defensive psutil calls)
+    "E501",   # line length (handled by formatter)
+    "SIM105", # contextlib.suppress — try/except is clearer for async and multi-line blocks
+    "SIM115", # context manager for open — not always practical with fcntl locks
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert is fine in tests
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+# bleak and psutil don't ship py.typed
+[[tool.mypy.overrides]]
+module = ["bleak.*", "psutil.*"]
+ignore_missing_imports = true

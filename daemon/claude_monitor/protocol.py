@@ -36,7 +36,7 @@ def short_sid(session_id: str) -> str:
     The result is lowercase hex so it is safe in JSON and fits the firmware's
     6-byte sid buffer (5 chars + null terminator).
     """
-    return hashlib.sha1(session_id.encode()).hexdigest()[:5]
+    return hashlib.sha1(session_id.encode()).hexdigest()[:5]  # noqa: S324 — not for security
 
 
 def make_state_msg(sid: str, state: str, label: str, idx: int, total: int) -> str:

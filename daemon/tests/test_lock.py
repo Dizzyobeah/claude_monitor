@@ -2,12 +2,10 @@
 
 import os
 import sys
+
 import pytest
-import threading
-import tempfile
 
-from claude_monitor.lock import acquire_lock, _lock_fh
-
+from claude_monitor.lock import acquire_lock
 
 # ---------------------------------------------------------------------------
 # Helpers

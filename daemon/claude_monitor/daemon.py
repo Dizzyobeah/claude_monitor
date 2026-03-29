@@ -4,22 +4,28 @@ import asyncio
 import logging
 import sys
 import time
-from typing import NamedTuple
+from collections.abc import Coroutine
+from typing import Any, NamedTuple
 
 from aiohttp import web
 
+from .ble_manager import BleManager
+from .ble_multi import BleMultiManager
 from .config import Config
 from .http_server import create_app
-from .ble_manager import BleManager
+from .protocol import make_ping_msg, make_remove_msg, make_state_msg, short_sid
 from .session_tracker import SessionTracker
 from .terminal_mapper import TerminalMapper
 from .window_focus import WindowFocus
-from .protocol import make_state_msg, make_remove_msg, make_ping_msg, short_sid
 
 log = logging.getLogger(__name__)
 
-SYNC_INTERVAL = 0.05  # seconds between BLE state pushes (20 Hz — fast enough to catch short-lived states like TOOL_USE)
+SYNC_INTERVAL_FAST = 0.05  # seconds — 20 Hz during active states (THINKING, TOOL_USE)
+SYNC_INTERVAL_SLOW = 0.50  # seconds — 2 Hz when idle or no sessions
+# States that indicate active processing — sync loop polls at SYNC_INTERVAL_FAST
+ACTIVE_STATES = {"THINKING", "TOOL_USE", "PERMISSION", "ERROR"}
 PING_INTERVAL = 30.0  # seconds between keepalive pings to the ESP32
+WATCHDOG_TIMEOUT = 10.0  # seconds — if sync loop hasn't run in this long, exit and let hook auto-restart
 
 # How long a state must be stable before sending to the ESP32.
 # Rapid THINKING→TOOL_USE→THINKING transitions (from PreToolUse/PostToolUse) fire
@@ -46,7 +52,9 @@ class ClaudeMonitorDaemon:
     def __init__(self, config: Config):
         self.config = config
         self.tracker = SessionTracker(stale_timeout=config.stale_timeout)
-        self.ble = BleManager()
+        self.ble: BleManager | BleMultiManager = (
+            BleMultiManager(config.max_devices) if config.max_devices > 1 else BleManager()
+        )
         self.terminal_mapper = TerminalMapper()
         self.window_focus = WindowFocus()
         # Set by _send_full_state (ready/reconnect) to force _sync_loop to
@@ -54,6 +62,13 @@ class ClaudeMonitorDaemon:
         # even if the initial _send_full_state write was dropped.
         self._force_resync: bool = False
         self._shutting_down: bool = False
+        # Monotonic heartbeat updated by _sync_loop on every iteration.
+        # If _housekeeping_loop detects this hasn't advanced in WATCHDOG_TIMEOUT,
+        # the daemon exits so the hook script can auto-restart a fresh process.
+        self._sync_heartbeat: float = time.monotonic()
+        # Event to wake the sync loop immediately when state changes,
+        # instead of waiting for the next poll interval.
+        self._sync_wake: asyncio.Event = asyncio.Event()
 
     async def run(self) -> None:
         """Start all daemon components as independent tasks."""
@@ -79,7 +94,8 @@ class ClaudeMonitorDaemon:
             # If housekeeping triggered shutdown, don't restart anything
             if self._shutting_down:
                 for t in pending:
-                    t.cancel()
+                    if not t.done():
+                        t.cancel()
                 return
             for task in done:
                 name = task.get_name()
@@ -92,7 +108,7 @@ class ClaudeMonitorDaemon:
                 new_task = asyncio.create_task(self._task_for(name), name=name)
                 tasks = [t for t in pending] + [new_task]
 
-    def _task_for(self, name: str):
+    def _task_for(self, name: str) -> "Coroutine[Any, Any, None]":
         if name == "http":
             return self._run_http()
         if name == "ble":
@@ -108,6 +124,7 @@ class ClaudeMonitorDaemon:
     async def _run_http(self) -> None:
         """Run the aiohttp server for hook events."""
         app = create_app(self.tracker, ble=self.ble)
+        app["sync_wake"] = self._sync_wake
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", self.config.http_port)
@@ -128,16 +145,29 @@ class ClaudeMonitorDaemon:
         _rxBuf from being overwritten by rapid THINKING↔TOOL_USE bursts before
         loop() can drain it.  Urgent states (PERMISSION, INPUT, ERROR) bypass the
         debounce so attention-needing transitions always show immediately.
+
+        The poll rate adapts: SYNC_INTERVAL_FAST (50ms) during active states or
+        pending debounce, SYNC_INTERVAL_SLOW (500ms) when idle. The _sync_wake
+        event allows immediate wake on state change regardless of interval.
         """
         # last_snapshot: what we last *sent* to the ESP32 for each session.
-        last_snapshot: dict = {}
+        last_snapshot: dict[str, tuple[str, str, int, int]] = {}
         # pending: candidate values not yet sent, waiting to stabilise.
         pending: dict[str, _PendingEntry] = {}
         # Track previous connected state so we can detect reconnection.
         was_connected: bool = False
+        interval: float = SYNC_INTERVAL_FAST
 
         while True:
-            await asyncio.sleep(SYNC_INTERVAL)
+            # Wait for the poll interval, but wake early if state changed.
+            # Using wait_for on the event gives us adaptive polling without
+            # busy-waiting: fast (50ms) during active states, slow (500ms) idle.
+            self._sync_wake.clear()
+            try:
+                await asyncio.wait_for(self._sync_wake.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+            self._sync_heartbeat = time.monotonic()
 
             currently_connected = self.ble.connected
 
@@ -177,7 +207,8 @@ class ClaudeMonitorDaemon:
             batch: list[str] = []
 
             # Remove messages for sessions that ended since last sync
-            for removed_id in self.tracker.pop_removed_ids():
+            removed_ids = self.tracker.pop_removed_ids()
+            for removed_id in removed_ids:
                 log.debug("Sending remove for session %s", removed_id)
                 batch.append(make_remove_msg(removed_id).rstrip("\n"))
                 last_snapshot.pop(removed_id, None)
@@ -245,6 +276,10 @@ class ClaudeMonitorDaemon:
             for gone in set(pending) - active_ids:
                 del pending[gone]
 
+            # Adaptive poll rate: fast when any session is active or debounce pending
+            has_active = any(s.state in ACTIVE_STATES for s in sessions)
+            interval = SYNC_INTERVAL_FAST if (has_active or pending) else SYNC_INTERVAL_SLOW
+
     async def _ping_loop(self) -> None:
         """Send periodic keepalive pings to the ESP32 to detect silent disconnects."""
         while True:
@@ -258,12 +293,23 @@ class ClaudeMonitorDaemon:
         while True:
             await asyncio.sleep(30)
             self.tracker.prune_stale()
+
+            # Self-health watchdog: if the sync loop has stalled, exit so the
+            # hook script can auto-restart a fresh daemon process.
+            stale = time.monotonic() - self._sync_heartbeat
+            if stale > WATCHDOG_TIMEOUT:
+                log.critical(
+                    "Sync loop stalled for %.1fs (limit %.1fs) — exiting for auto-restart",
+                    stale, WATCHDOG_TIMEOUT,
+                )
+                sys.exit(1)
+
             if self.tracker.is_idle:
                 log.info("All sessions ended — shutting down.")
                 self._shutting_down = True
                 return
 
-    async def _handle_esp32_message(self, msg: dict) -> None:
+    async def _handle_esp32_message(self, msg: dict[str, Any]) -> None:
         """Handle messages from the ESP32 (tap, pong, ready)."""
         cmd = msg.get("cmd", "")
 
@@ -271,6 +317,9 @@ class ClaudeMonitorDaemon:
             await self._handle_tap(msg.get("sid", ""))
         elif cmd == "ready":
             log.info("ESP32 display is ready — sending full state")
+            await self._send_full_state()
+        elif cmd == "overflow":
+            log.warning("ESP32 ring buffer overflow — resending full state")
             await self._send_full_state()
         elif cmd == "pong":
             log.debug("ESP32 pong received")
@@ -323,10 +372,16 @@ class ClaudeMonitorDaemon:
                     except Exception as exc:
                         log.debug("Could not walk ancestor chain: %s", exc)
 
-                ref = self.terminal_mapper.find_terminal(
-                    ppid=info.ppid,
-                    tty=info.tty,
-                )
+                # Use cached terminal ref if available; otherwise look it up
+                # and cache for subsequent taps on the same session.
+                ref = info._cached_terminal
+                if ref is None:
+                    ref = self.terminal_mapper.find_terminal(
+                        ppid=info.ppid,
+                        tty=info.tty,
+                    )
+                    if ref:
+                        info._cached_terminal = ref
                 if ref:
                     log.info(
                         "Resolved terminal: app=%r app_name=%r pid=%d — focusing",

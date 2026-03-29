@@ -21,9 +21,10 @@ import sys
 
 log = logging.getLogger(__name__)
 
-# Lock file lives in the XDG state dir on Linux/macOS;
+# State dir lives in the XDG state dir on Linux/macOS;
 # %USERPROFILE%\.local\state\claude-monitor\ on Windows (same path logic).
-_LOCK_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "claude-monitor")
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "claude-monitor")
+_LOCK_DIR = STATE_DIR
 _LOCK_PATH = os.path.join(_LOCK_DIR, "daemon.lock")
 
 
@@ -99,7 +100,7 @@ def _acquire_lock_windows(target: str) -> None:
     import msvcrt
 
     # O_CREAT|O_RDWR: create if absent, never truncate.
-    fd = os.open(target, os.O_CREAT | os.O_RDWR | os.O_BINARY)
+    fd = os.open(target, os.O_CREAT | os.O_RDWR | os.O_BINARY)  # type: ignore[attr-defined]
     fh = os.fdopen(fd, "r+b")  # noqa: WPS515
 
     try:
@@ -110,7 +111,7 @@ def _acquire_lock_windows(target: str) -> None:
             fh.flush()
 
         fh.seek(0)
-        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
 
     except OSError:
         try:

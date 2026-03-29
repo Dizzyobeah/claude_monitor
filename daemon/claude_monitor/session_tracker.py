@@ -1,9 +1,16 @@
 """Track Claude Code session states from hook events."""
 
+from __future__ import annotations
+
+import dataclasses
 import os
 import time
-import dataclasses
+from typing import TYPE_CHECKING, Any
+
 from .protocol import EVENT_TO_STATE, NOTIFICATION_TO_STATE
+
+if TYPE_CHECKING:
+    from .terminal_mapper import WindowRef
 
 # How long to keep a session visible after SessionEnd before removing it.
 # This prevents a "No active sessions" flash when OpenCode briefly deletes
@@ -20,6 +27,28 @@ class SessionInfo:
     last_update: float = dataclasses.field(default_factory=time.time)
     tty: str = ""
     ppid: str = ""
+    # Cached terminal window reference — populated on first tap, avoids
+    # re-walking the process tree on every subsequent tap for this session.
+    _cached_terminal: WindowRef | None = dataclasses.field(default=None, repr=False)
+    # Per-state duration tracking: {state_name: total_seconds}
+    _state_durations: dict[str, float] = dataclasses.field(default_factory=dict, repr=False)
+    _state_entered_at: float = dataclasses.field(default_factory=time.time, repr=False)
+
+    def _record_state_transition(self, new_state: str) -> None:
+        """Record time spent in the current state before transitioning."""
+        now = time.time()
+        elapsed = now - self._state_entered_at
+        self._state_durations[self.state] = self._state_durations.get(self.state, 0.0) + elapsed
+        self._state_entered_at = now
+
+    @property
+    def metrics(self) -> dict[str, float]:
+        """Return per-state durations including current in-progress state."""
+        result = dict(self._state_durations)
+        # Add time spent in current state so far
+        elapsed = time.time() - self._state_entered_at
+        result[self.state] = result.get(self.state, 0.0) + elapsed
+        return result
 
 
 class SessionTracker:
@@ -67,7 +96,7 @@ class SessionTracker:
         self,
         session_id: str,
         event: str,
-        data: dict,
+        data: dict[str, Any],
         tty: str = "",
         ppid: str = "",
     ) -> None:
@@ -101,14 +130,17 @@ class SessionTracker:
         if state is None:
             return  # Unrecognized event
 
-        info = self.sessions.get(session_id)
-        if info is None:
+        existing = self.sessions.get(session_id)
+        if existing is None:
             info = SessionInfo(session_id=session_id)
             self.sessions[session_id] = info
             self._changed = True  # New session always marks as changed
             self.ever_had_session = True
+        else:
+            info = existing
 
         if info.state != state:
+            info._record_state_transition(state)
             self._changed = True
 
         info.state = state

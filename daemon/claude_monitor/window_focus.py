@@ -2,10 +2,18 @@
 
 import asyncio
 import logging
+import re
 import sys
+from typing import Any
+
 from .terminal_mapper import WindowRef
 
 log = logging.getLogger(__name__)
+
+# Only allow safe characters in app names passed to osascript.
+# Rejects quotes, backslashes, and control characters that could
+# alter the meaning of the AppleScript string.
+_SAFE_APP_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-\.]+$")
 
 
 class WindowFocus:
@@ -50,7 +58,14 @@ class WindowFocus:
             return False
 
     def _build_applescript(self, ref: WindowRef) -> str:
-        """Build the AppleScript to focus the terminal."""
+        """Build the AppleScript to focus the terminal.
+
+        App names are validated against a safe character set to prevent
+        AppleScript injection via crafted process names.
+        """
+        if not _SAFE_APP_NAME_RE.match(ref.app_name):
+            log.warning("Rejected unsafe app name for AppleScript: %r", ref.app_name)
+            return ""
         if ref.app == "iterm2":
             return 'tell application "iTerm2"\n    activate\nend tell'
         elif ref.app == "terminal":
@@ -84,8 +99,6 @@ class WindowFocus:
         permission.  We unlink immediately after.
         """
         try:
-            import ctypes
-            import ctypes.wintypes
 
             # Find the main window HWND for the given PID
             hwnd = await asyncio.get_running_loop().run_in_executor(
@@ -119,8 +132,8 @@ class WindowFocus:
         import ctypes
         import ctypes.wintypes
 
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
 
         # SW_RESTORE = 9: restore if minimised
         user32.ShowWindow(hwnd, 9)
@@ -141,12 +154,12 @@ class WindowFocus:
         try:
             # Attach our thread to the foreground window's thread so that
             # SetForegroundWindow thinks we already own the foreground.
-            if fg_tid_val and fg_tid_val != our_tid_val:
+            if fg_tid_val and fg_tid_val != our_tid_val:  # noqa: SIM102
                 if user32.AttachThreadInput(our_tid_val, fg_tid_val, True):
                     attached_to_fg = True
 
             # Also attach to the target thread (some compositors require this)
-            if (
+            if (  # noqa: SIM102
                 target_tid_val
                 and target_tid_val != our_tid_val
                 and target_tid_val != fg_tid_val
@@ -165,19 +178,19 @@ class WindowFocus:
                 user32.AttachThreadInput(our_tid_val, target_tid_val, False)
 
     @staticmethod
-    def _find_hwnd_for_pid(pid: int):
+    def _find_hwnd_for_pid(pid: int) -> int | None:
         """Enumerate top-level windows and return the first visible one owned by pid."""
         import ctypes
         import ctypes.wintypes
 
-        user32 = ctypes.windll.user32
-        found = ctypes.wintypes.HWND(0)
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        found: Any = ctypes.wintypes.HWND(0)
 
-        EnumWindowsProc = ctypes.WINFUNCTYPE(
+        EnumWindowsProc = ctypes.WINFUNCTYPE(  # type: ignore[attr-defined]
             ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM
         )
 
-        def callback(hwnd, _lparam):
+        def callback(hwnd: int, _lparam: int) -> bool:
             nonlocal found
             if not user32.IsWindowVisible(hwnd):
                 return True
