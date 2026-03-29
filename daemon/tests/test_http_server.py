@@ -7,7 +7,6 @@ from aiohttp.test_utils import TestClient, TestServer
 from claude_monitor.http_server import create_app
 from claude_monitor.session_tracker import SessionTracker
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -80,6 +79,20 @@ class TestHookValid:
 # ---------------------------------------------------------------------------
 # /hook — malformed / missing fields
 # ---------------------------------------------------------------------------
+
+
+class TestRequestSizeLimit:
+    @pytest.mark.asyncio
+    async def test_oversized_payload_rejected(self, client):
+        """Payloads exceeding client_max_size (2 MB) are rejected."""
+        huge_payload = '{"hook_event_name":"SessionStart","session_id":"x","data":"' + "A" * 3_000_000 + '"}'
+        resp = await client.post(
+            "/hook",
+            data=huge_payload,
+            headers={"Content-Type": "application/json"},
+        )
+        # aiohttp returns 400 (Bad Request) when the payload exceeds client_max_size
+        assert resp.status in (400, 413)
 
 
 class TestHookErrors:

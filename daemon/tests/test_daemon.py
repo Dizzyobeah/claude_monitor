@@ -1,19 +1,23 @@
 """Tests for ClaudeMonitorDaemon: sync loop, remove messages, ping, task routing."""
 
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, call
+
+from claude_monitor.config import Config
 from claude_monitor.daemon import (
-    ClaudeMonitorDaemon,
     PING_INTERVAL,
     SEND_DEBOUNCE_S,
-    SYNC_INTERVAL,
-    URGENT_STATES,
+    SYNC_INTERVAL_FAST,
+    WATCHDOG_TIMEOUT,
+    ClaudeMonitorDaemon,
 )
-from claude_monitor.config import Config
-from claude_monitor.session_tracker import SessionTracker
-from claude_monitor.protocol import make_remove_msg, make_ping_msg, short_sid
+from claude_monitor.protocol import make_ping_msg, make_remove_msg, short_sid
 from claude_monitor.terminal_mapper import WindowRef
+
+# Alias for existing tests that used SYNC_INTERVAL
+SYNC_INTERVAL = SYNC_INTERVAL_FAST
 
 
 def make_daemon(verbose: bool = False) -> ClaudeMonitorDaemon:
@@ -26,6 +30,29 @@ def make_daemon(verbose: bool = False) -> ClaudeMonitorDaemon:
     return daemon
 
 
+def _sync_sleep_patcher(max_ticks: int):
+    """Return a context manager that patches asyncio.wait_for to control
+    the sync loop's adaptive-rate wait.  After *max_ticks* iterations
+    the loop is cancelled.
+
+    Also patches asyncio.sleep for other loops (ping, housekeeping).
+    """
+    tick_count = 0
+
+    async def fake_wait_for(coro, *, timeout=None):
+        nonlocal tick_count
+        tick_count += 1
+        if tick_count > max_ticks:
+            # Clean up the coroutine to avoid RuntimeWarning
+            coro.close()
+            raise asyncio.CancelledError()
+        # Don't actually wait on the event — just simulate timeout
+        coro.close()
+        raise asyncio.TimeoutError()
+
+    return patch("asyncio.wait_for", side_effect=fake_wait_for)
+
+
 # ---------------------------------------------------------------------------
 # _sync_loop: remove messages
 # ---------------------------------------------------------------------------
@@ -35,34 +62,16 @@ class TestSyncLoopRemoveMessages:
     @pytest.mark.asyncio
     async def test_remove_message_sent_when_session_ends(self):
         daemon = make_daemon()
-        # Pre-populate with one session then end it; force-expire the grace period
         daemon.tracker.update_session("sess1", "SessionStart", {})
         daemon.tracker.update_session("sess1", "SessionEnd", {})
-        # Expire the grace period immediately so pop_removed_ids returns it
         daemon.tracker._remove_session("sess1")
 
-        # Run exactly one sync tick
-        async def one_tick():
-            await asyncio.sleep(SYNC_INTERVAL * 1.1)
-
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            # We only want one iteration; make the second sleep raise CancelledError
-            call_count = 0
-
-            async def sleep_side_effect(t):
-                nonlocal call_count
-                call_count += 1
-                if call_count > 1:
-                    raise asyncio.CancelledError()
-
-            mock_sleep.side_effect = sleep_side_effect
-
+        with _sync_sleep_patcher(1):
             try:
                 await daemon._sync_loop()
             except asyncio.CancelledError:
                 pass
 
-        # The remove message should have been sent
         sent_calls = [c.args[0] for c in daemon.ble.send.call_args_list]
         assert make_remove_msg("sess1") in sent_calls
 
@@ -71,17 +80,7 @@ class TestSyncLoopRemoveMessages:
         daemon = make_daemon()
         daemon.tracker.update_session("sess1", "SessionStart", {})
 
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            call_count = 0
-
-            async def sleep_side_effect(t):
-                nonlocal call_count
-                call_count += 1
-                if call_count > 1:
-                    raise asyncio.CancelledError()
-
-            mock_sleep.side_effect = sleep_side_effect
-
+        with _sync_sleep_patcher(1):
             try:
                 await daemon._sync_loop()
             except asyncio.CancelledError:
@@ -97,17 +96,7 @@ class TestSyncLoopRemoveMessages:
         daemon.tracker.update_session("sess1", "SessionStart", {})
         daemon.tracker.update_session("sess1", "SessionEnd", {})
 
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            call_count = 0
-
-            async def sleep_side_effect(t):
-                nonlocal call_count
-                call_count += 1
-                if call_count > 1:
-                    raise asyncio.CancelledError()
-
-            mock_sleep.side_effect = sleep_side_effect
-
+        with _sync_sleep_patcher(1):
             try:
                 await daemon._sync_loop()
             except asyncio.CancelledError:
@@ -124,31 +113,9 @@ class TestSyncLoopRemoveMessages:
 class TestSyncLoopDebounce:
     """Verify that non-urgent states are held back by SEND_DEBOUNCE_S."""
 
-    def _run_n_ticks(self, daemon, n: int, monotonic_offset: float = 0.0):
-        """Run the sync loop for exactly n ticks, with time.monotonic advancing
-        by SYNC_INTERVAL per tick plus an optional extra offset on the first tick."""
-        import time
-
-        tick_count = 0
-        base_time = time.monotonic()
-
-        async def sleep_side_effect(t):
-            nonlocal tick_count
-            tick_count += 1
-            if tick_count > n:
-                raise asyncio.CancelledError()
-
-        monotonic_calls = [0]
-
-        def fake_monotonic():
-            return base_time + monotonic_offset + tick_count * SYNC_INTERVAL
-
-        return sleep_side_effect, fake_monotonic
-
     @pytest.mark.asyncio
     async def test_non_urgent_state_not_sent_immediately(self):
         """THINKING (non-urgent) should not be sent on the first tick."""
-        from claude_monitor.protocol import make_state_msg
 
         daemon = make_daemon()
         daemon.tracker.update_session("sess1", "UserPromptSubmit", {"cwd": "/proj"})
@@ -159,21 +126,15 @@ class TestSyncLoopDebounce:
         base = time.monotonic()
         tick = [0]
 
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            with patch(
-                "time.monotonic", side_effect=lambda: base + tick[0] * SYNC_INTERVAL
-            ):
+        def counting_monotonic():
+            tick[0] += 1
+            return base + tick[0] * SYNC_INTERVAL
 
-                async def sleep_se(t):
-                    tick[0] += 1
-                    if tick[0] > 1:
-                        raise asyncio.CancelledError()
-
-                mock_sleep.side_effect = sleep_se
-                try:
-                    await daemon._sync_loop()
-                except asyncio.CancelledError:
-                    pass
+        with _sync_sleep_patcher(1), patch("time.monotonic", side_effect=counting_monotonic):
+            try:
+                await daemon._sync_loop()
+            except asyncio.CancelledError:
+                pass
 
         # THINKING is non-urgent: nothing should have been sent on tick 1
         daemon.ble.send.assert_not_called()
@@ -189,27 +150,23 @@ class TestSyncLoopDebounce:
         import time
 
         base = time.monotonic()
-        tick = [0]
-        # advance time by enough to clear the debounce (+3 accounts for
-        # the was_connected tick, the debounce itself, and float rounding)
+        # enough ticks to clear debounce (+3 for was_connected, debounce, rounding)
         debounce_ticks = round(SEND_DEBOUNCE_S / SYNC_INTERVAL) + 3
 
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            with patch(
-                "time.monotonic",
-                side_effect=lambda: base + tick[0] * SYNC_INTERVAL,
-            ):
+        tick = [0]
 
-                async def sleep_se(t):
-                    tick[0] += 1
-                    if tick[0] > debounce_ticks:
-                        raise asyncio.CancelledError()
+        def counting_monotonic():
+            tick[0] += 1
+            return base + tick[0] * SYNC_INTERVAL
 
-                mock_sleep.side_effect = sleep_se
-                try:
-                    await daemon._sync_loop()
-                except asyncio.CancelledError:
-                    pass
+        with (
+            _sync_sleep_patcher(debounce_ticks),
+            patch("time.monotonic", side_effect=counting_monotonic),
+        ):
+            try:
+                await daemon._sync_loop()
+            except asyncio.CancelledError:
+                pass
 
         sent = [c.args[0] for c in daemon.ble.send.call_args_list]
         expected = make_state_msg(
@@ -234,21 +191,19 @@ class TestSyncLoopDebounce:
             base = time.monotonic()
             tick = [0]
 
-            with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                with patch(
-                    "time.monotonic", side_effect=lambda: base + tick[0] * SYNC_INTERVAL
-                ):
+            # Use default args to bind loop variables
+            def counting_monotonic(b=base, t=tick):
+                t[0] += 1
+                return b + t[0] * SYNC_INTERVAL
 
-                    async def sleep_se(t):
-                        tick[0] += 1
-                        if tick[0] > 1:
-                            raise asyncio.CancelledError()
-
-                    mock_sleep.side_effect = sleep_se
-                    try:
-                        await daemon._sync_loop()
-                    except asyncio.CancelledError:
-                        pass
+            with (
+                _sync_sleep_patcher(1),
+                patch("time.monotonic", side_effect=counting_monotonic),
+            ):
+                try:
+                    await daemon._sync_loop()
+                except asyncio.CancelledError:
+                    pass
 
             sent = [c.args[0] for c in daemon.ble.send.call_args_list]
             expected = make_state_msg(
@@ -581,3 +536,99 @@ class TestHandleTap:
         await daemon._handle_tap(short_sid("11111aaaaa"))  # Must not raise
 
         daemon.window_focus.focus.assert_called_once_with(ref)
+
+
+# ---------------------------------------------------------------------------
+# Sync heartbeat / watchdog
+# ---------------------------------------------------------------------------
+
+
+class TestSyncHeartbeat:
+    @pytest.mark.asyncio
+    async def test_sync_loop_updates_heartbeat(self):
+        """The sync loop should update _sync_heartbeat on every iteration."""
+
+        daemon = make_daemon()
+        initial = daemon._sync_heartbeat
+
+        with _sync_sleep_patcher(1):
+            try:
+                await daemon._sync_loop()
+            except asyncio.CancelledError:
+                pass
+
+        assert daemon._sync_heartbeat >= initial
+
+    @pytest.mark.asyncio
+    async def test_watchdog_exits_on_stale_heartbeat(self):
+        """Housekeeping should call sys.exit(1) when heartbeat is stale."""
+        import time
+
+        daemon = make_daemon()
+        # Set heartbeat far in the past to trigger watchdog
+        daemon._sync_heartbeat = time.monotonic() - WATCHDOG_TIMEOUT - 5
+        # Ensure tracker is not idle so housekeeping doesn't exit for that reason
+        daemon.tracker.update_session("s1", "SessionStart", {})
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            call_count = 0
+
+            async def sleep_side_effect(t):
+                nonlocal call_count
+                call_count += 1
+                if call_count > 1:
+                    raise asyncio.CancelledError()
+
+            mock_sleep.side_effect = sleep_side_effect
+
+            with pytest.raises(SystemExit) as exc_info:
+                await daemon._housekeeping_loop()
+
+            assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# _handle_esp32_message: overflow
+# ---------------------------------------------------------------------------
+
+
+class TestHandleOverflow:
+    @pytest.mark.asyncio
+    async def test_overflow_triggers_full_state(self):
+        daemon = make_daemon()
+        with patch.object(
+            daemon, "_send_full_state", new_callable=AsyncMock
+        ) as mock_send:
+            await daemon._handle_esp32_message({"cmd": "overflow"})
+            mock_send.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Terminal mapping cache
+# ---------------------------------------------------------------------------
+
+
+class TestTerminalCache:
+    @pytest.mark.asyncio
+    async def test_second_tap_uses_cached_terminal(self):
+        """After the first tap resolves a terminal, subsequent taps skip the lookup."""
+        daemon = make_daemon()
+        daemon.tracker.update_session("cache12345", "SessionStart", {})
+        daemon.tracker.sessions["cache12345"].ppid = "1234"
+
+        ref = WindowRef(app="iterm2", app_name="iTerm2", pid=999)
+        daemon.terminal_mapper = MagicMock()
+        daemon.terminal_mapper.find_terminal.return_value = ref
+        daemon.window_focus = MagicMock()
+        daemon.window_focus.focus = AsyncMock(return_value=True)
+
+        sid = short_sid("cache12345")
+
+        # First tap — lookup happens
+        await daemon._handle_tap(sid)
+        assert daemon.terminal_mapper.find_terminal.call_count == 1
+
+        # Second tap — should use cache, no new lookup
+        await daemon._handle_tap(sid)
+        assert daemon.terminal_mapper.find_terminal.call_count == 1
+        assert daemon.window_focus.focus.call_count == 2

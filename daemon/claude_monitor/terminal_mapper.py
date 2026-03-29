@@ -1,9 +1,8 @@
 """Map Claude Code / OpenCode sessions to terminal windows/tabs."""
 
+import dataclasses
 import logging
 import sys
-import dataclasses
-from typing import Optional
 
 import psutil
 
@@ -98,7 +97,7 @@ class WindowRef:
     pid: int  # Terminal process PID
 
 
-def _sorted_terminal_apps():
+def _sorted_terminal_apps() -> list[tuple[str, str]]:
     """Return TERMINAL_APPS items sorted by key length descending.
 
     Longer keys are checked first so that e.g. "gnome-terminal" matches
@@ -107,7 +106,7 @@ def _sorted_terminal_apps():
     return sorted(TERMINAL_APPS.items(), key=lambda kv: -len(kv[0]))
 
 
-def _match_name(name: str):
+def _match_name(name: str) -> tuple[str, str] | None:
     """Return (key, display_name) if *name* contains a known terminal key, else None."""
     for key, display_name in _sorted_terminal_apps():
         if key in name:
@@ -122,7 +121,7 @@ class TerminalMapper:
     # Public API
     # ------------------------------------------------------------------
 
-    def find_terminal(self, ppid: str = "", tty: str = "") -> Optional[WindowRef]:
+    def find_terminal(self, ppid: str = "", tty: str = "") -> WindowRef | None:
         """Try all strategies to find the terminal window.
 
         Strategy order:
@@ -138,7 +137,7 @@ class TerminalMapper:
     # Strategy 1 — ancestor chain walk
     # ------------------------------------------------------------------
 
-    def find_by_ppid(self, ppid: str) -> Optional[WindowRef]:
+    def find_by_ppid(self, ppid: str) -> WindowRef | None:
         """Walk up the process tree from *ppid* to find the terminal.
 
         Collects the full ancestor list first (catching AccessDenied
@@ -176,8 +175,8 @@ class TerminalMapper:
         # do a two-pass scan: first looking only for terminal-emulator keys,
         # then for editor keys, so a terminal deeper in the chain wins over
         # an editor higher up.
-        terminal_ref: Optional[WindowRef] = None
-        editor_ref: Optional[WindowRef] = None
+        terminal_ref: WindowRef | None = None
+        editor_ref: WindowRef | None = None
 
         for ancestor in ancestors:
             try:
@@ -213,7 +212,7 @@ class TerminalMapper:
     # Strategy 2 — TTY scan
     # ------------------------------------------------------------------
 
-    def find_by_tty(self, tty: str) -> Optional[WindowRef]:
+    def find_by_tty(self, tty: str) -> WindowRef | None:
         """Find terminal by matching TTY device (Unix only)."""
         if not tty or tty in ("unknown", "windows", ""):
             return None
@@ -245,7 +244,7 @@ class TerminalMapper:
     @staticmethod
     def _find_by_exe_path_macos(
         ancestors: list[psutil.Process],
-    ) -> Optional[WindowRef]:
+    ) -> WindowRef | None:
         """On macOS, fall back to exe-path matching for Electron-based apps.
 
         VS Code, Cursor, etc. report their psutil process name as "Electron"
@@ -254,8 +253,8 @@ class TerminalMapper:
 
         Same preference rule applies: terminal emulators beat editors.
         """
-        terminal_ref: Optional[WindowRef] = None
-        editor_ref: Optional[WindowRef] = None
+        terminal_ref: WindowRef | None = None
+        editor_ref: WindowRef | None = None
 
         for ancestor in ancestors:
             try:

@@ -1,9 +1,10 @@
 """Tests for TerminalMapper: process-tree and TTY discovery."""
 
-import sys
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
-from claude_monitor.terminal_mapper import TerminalMapper, WindowRef, TERMINAL_APPS
+
+from claude_monitor.terminal_mapper import TERMINAL_APPS, TerminalMapper, WindowRef
 
 
 def _make_proc(name: str, pid: int, ppid: int = 1, terminal: str | None = None):
@@ -88,7 +89,7 @@ class TestFindByPpid:
 
         start = _make_proc("python3", pid=400)
         blocked = _make_proc("OpenConsole.exe", pid=300)
-        terminal = _make_proc("WindowsTerminal", pid=200)
+        _make_proc("WindowsTerminal", pid=200)  # exists but unreachable
 
         # blocked.parent() raises AccessDenied — but terminal is above it
         blocked.parent.side_effect = psutil.AccessDenied(pid=300)

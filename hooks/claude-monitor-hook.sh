@@ -18,10 +18,13 @@ TTY_NAME=$(tty 2>/dev/null) || TTY_NAME="unknown"
 # --------------------------------------------------------------------------
 if ! curl -sf --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then
     DAEMON_DIR="$REPO_ROOT/daemon"
+    LOG_DIR="$HOME/.local/state/claude-monitor"
     if [ -d "$DAEMON_DIR" ]; then
-        # Start daemon detached; log goes to /tmp so it's always writable
+        # Start daemon detached; log goes to state dir with restricted perms
+        mkdir -p "$LOG_DIR"
         (cd "$DAEMON_DIR" && nohup uv run claude-monitor \
-            >>"${TMPDIR:-/tmp}/claude-monitor.log" 2>&1 &)
+            >>"$LOG_DIR/daemon.log" 2>&1 &)
+        chmod 600 "$LOG_DIR/daemon.log" 2>/dev/null
 
         # Poll /health until the daemon is ready (up to 2 seconds)
         for _ in {1..10}; do

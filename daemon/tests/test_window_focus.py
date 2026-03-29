@@ -1,10 +1,12 @@
 """Tests for WindowFocus: platform-appropriate terminal window activation."""
 
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, call
-from claude_monitor.window_focus import WindowFocus
+
 from claude_monitor.terminal_mapper import WindowRef
+from claude_monitor.window_focus import WindowFocus
 
 
 def _ref(app="iterm2", app_name="iTerm2", pid=1234):
@@ -63,6 +65,26 @@ class TestBuildApplescript:
         assert "System Events" in script
         assert "9999" in script
         assert "unix id" in script
+
+    def test_unsafe_app_name_rejected(self):
+        """App names containing quotes or special chars are rejected."""
+        wf = WindowFocus()
+        # Double quote injection attempt
+        script = wf._build_applescript(
+            _ref(app="evil", app_name='Evil"\n    do shell script "whoami', pid=1)
+        )
+        assert script == ""
+
+    def test_safe_app_names_accepted(self):
+        """All known terminal app names pass the safety check."""
+        wf = WindowFocus()
+        for app_name in [
+            "iTerm2", "Terminal", "Warp", "Alacritty", "kitty",
+            "WezTerm", "Ghostty", "VS Code", "VS Code Insiders",
+            "IntelliJ IDEA", "Cursor", "Windsurf",
+        ]:
+            script = wf._build_applescript(_ref(app="test", app_name=app_name, pid=1))
+            assert script != "", f"App name {app_name!r} was rejected but should be safe"
 
 
 # ---------------------------------------------------------------------------
