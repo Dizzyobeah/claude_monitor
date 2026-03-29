@@ -1,5 +1,7 @@
 # Claude Monitor
 
+> **Note:** This is my own personal project. I'm not affiliated with, sponsored by, or endorsed by Anthropic. "Claude" and "Clawd" are trademarks of Anthropic.
+
 ESP32-based hardware status display for Claude Code sessions. Shows real-time animated state on a Cheap Yellow Display (CYD), connected via Bluetooth Low Energy. Tap the screen to focus the terminal window that needs your attention.
 
 ```
