@@ -192,3 +192,85 @@ class TestFindTerminal:
             ref = mapper.find_terminal(ppid="100", tty="/dev/ttys001")
 
         assert ref is None
+
+
+class TestWindowsConsoleFallthrough:
+    """On Windows, pwsh/cmd should be skipped in favour of a GUI terminal ancestor."""
+
+    def test_pwsh_skipped_for_windows_terminal(self):
+        """pwsh → WindowsTerminal chain should return WindowsTerminal on Windows."""
+        mapper = TerminalMapper()
+        start = _make_proc("node.exe", pid=500)
+        pwsh = _make_proc("pwsh.exe", pid=400)
+        wt = _make_proc("WindowsTerminal.exe", pid=300)
+        root = _make_proc("explorer.exe", pid=100)
+        _chain(start, pwsh, wt, root)
+
+        with (
+            patch("claude_monitor.terminal_mapper.psutil.Process", return_value=start),
+            patch("claude_monitor.terminal_mapper.sys") as mock_sys,
+        ):
+            mock_sys.platform = "win32"
+            ref = mapper.find_by_ppid("500")
+
+        assert ref is not None
+        assert ref.app == "windowsterminal"
+        assert ref.pid == 300
+
+    def test_cmd_skipped_for_windows_terminal(self):
+        """cmd → WindowsTerminal should return WindowsTerminal on Windows."""
+        mapper = TerminalMapper()
+        start = _make_proc("node.exe", pid=500)
+        cmd = _make_proc("cmd.exe", pid=400)
+        wt = _make_proc("WindowsTerminal.exe", pid=300)
+        _chain(start, cmd, wt)
+
+        with (
+            patch("claude_monitor.terminal_mapper.psutil.Process", return_value=start),
+            patch("claude_monitor.terminal_mapper.sys") as mock_sys,
+        ):
+            mock_sys.platform = "win32"
+            ref = mapper.find_by_ppid("500")
+
+        assert ref is not None
+        assert ref.app == "windowsterminal"
+        assert ref.pid == 300
+
+    def test_pwsh_returned_when_no_gui_terminal_above(self):
+        """If there's no GUI terminal above pwsh, fall back to pwsh itself."""
+        mapper = TerminalMapper()
+        start = _make_proc("node.exe", pid=500)
+        pwsh = _make_proc("pwsh.exe", pid=400)
+        root = _make_proc("explorer.exe", pid=100)
+        _chain(start, pwsh, root)
+
+        with (
+            patch("claude_monitor.terminal_mapper.psutil.Process", return_value=start),
+            patch("claude_monitor.terminal_mapper.sys") as mock_sys,
+        ):
+            mock_sys.platform = "win32"
+            ref = mapper.find_by_ppid("500")
+
+        assert ref is not None
+        assert ref.app == "pwsh"
+        assert ref.pid == 400
+
+    def test_pwsh_not_skipped_on_non_windows(self):
+        """On macOS/Linux, pwsh is treated as a normal terminal emulator."""
+        mapper = TerminalMapper()
+        start = _make_proc("node.exe", pid=500)
+        pwsh = _make_proc("pwsh.exe", pid=400)
+        wt = _make_proc("WindowsTerminal.exe", pid=300)
+        _chain(start, pwsh, wt)
+
+        with (
+            patch("claude_monitor.terminal_mapper.psutil.Process", return_value=start),
+            patch("claude_monitor.terminal_mapper.sys") as mock_sys,
+        ):
+            mock_sys.platform = "darwin"
+            ref = mapper.find_by_ppid("500")
+
+        # On macOS, pwsh is treated as a normal terminal — should match immediately
+        assert ref is not None
+        assert ref.app == "pwsh"
+        assert ref.pid == 400

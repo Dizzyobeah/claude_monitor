@@ -79,9 +79,18 @@ class TestBuildApplescript:
         """All known terminal app names pass the safety check."""
         wf = WindowFocus()
         for app_name in [
-            "iTerm2", "Terminal", "Warp", "Alacritty", "kitty",
-            "WezTerm", "Ghostty", "VS Code", "VS Code Insiders",
-            "IntelliJ IDEA", "Cursor", "Windsurf",
+            "iTerm2",
+            "Terminal",
+            "Warp",
+            "Alacritty",
+            "kitty",
+            "WezTerm",
+            "Ghostty",
+            "VS Code",
+            "VS Code Insiders",
+            "IntelliJ IDEA",
+            "Cursor",
+            "Windsurf",
         ]:
             script = wf._build_applescript(_ref(app="test", app_name=app_name, pid=1))
             assert script != "", f"App name {app_name!r} was rejected but should be safe"
@@ -158,7 +167,6 @@ class TestFocusWindows:
         fake_hwnd = 0xABCD
 
         async def fake_executor(_executor, fn, *args):
-            # First call returns the hwnd; second call returns True (focus success)
             if fn == wf._find_hwnd_for_pid:
                 return fake_hwnd
             if fn == wf._set_foreground_attached:
@@ -168,9 +176,7 @@ class TestFocusWindows:
         loop = MagicMock()
         loop.run_in_executor = AsyncMock(side_effect=fake_executor)
 
-        with patch(
-            "claude_monitor.window_focus.asyncio.get_running_loop", return_value=loop
-        ):
+        with patch("claude_monitor.window_focus.asyncio.get_running_loop", return_value=loop):
             result = await wf._focus_windows(_ref())
         assert result is True
 
@@ -181,16 +187,38 @@ class TestFocusWindows:
         async def fake_executor(_executor, fn, *args):
             if fn == wf._find_hwnd_for_pid:
                 return None
+            if fn == wf._find_hwnd_by_ancestor_walk:
+                return None
             return True
 
         loop = MagicMock()
         loop.run_in_executor = AsyncMock(side_effect=fake_executor)
 
-        with patch(
-            "claude_monitor.window_focus.asyncio.get_running_loop", return_value=loop
-        ):
+        with patch("claude_monitor.window_focus.asyncio.get_running_loop", return_value=loop):
             result = await wf._focus_windows(_ref())
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_ancestor_walk_fallback(self):
+        """When direct PID has no HWND, ancestor walk should find one."""
+        wf = WindowFocus()
+        fake_hwnd = 0xBEEF
+
+        async def fake_executor(_executor, fn, *args):
+            if fn == wf._find_hwnd_for_pid:
+                return None  # direct PID has no HWND
+            if fn == wf._find_hwnd_by_ancestor_walk:
+                return fake_hwnd  # ancestor has HWND
+            if fn == wf._set_foreground_attached:
+                return True
+            return None
+
+        loop = MagicMock()
+        loop.run_in_executor = AsyncMock(side_effect=fake_executor)
+
+        with patch("claude_monitor.window_focus.asyncio.get_running_loop", return_value=loop):
+            result = await wf._focus_windows(_ref())
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_exception_returns_false(self):
@@ -198,9 +226,7 @@ class TestFocusWindows:
         loop = MagicMock()
         loop.run_in_executor = AsyncMock(side_effect=RuntimeError("ctypes error"))
 
-        with patch(
-            "claude_monitor.window_focus.asyncio.get_running_loop", return_value=loop
-        ):
+        with patch("claude_monitor.window_focus.asyncio.get_running_loop", return_value=loop):
             result = await wf._focus_windows(_ref())
         assert result is False
 
@@ -524,3 +550,138 @@ class TestTryYdotool:
             side_effect=FileNotFoundError(),
         ):
             assert await wf._try_ydotool(1234) is False
+
+
+# ---------------------------------------------------------------------------
+# trigger_dictation — dispatcher
+# ---------------------------------------------------------------------------
+
+
+class TestTriggerDictation:
+    @pytest.mark.asyncio
+    async def test_dispatches_to_macos(self):
+        wf = WindowFocus()
+        with (
+            patch("claude_monitor.window_focus.sys") as mock_sys,
+            patch.object(wf, "_trigger_dictation_macos", AsyncMock(return_value=True)) as m,
+        ):
+            mock_sys.platform = "darwin"
+            result = await wf.trigger_dictation()
+        assert result is True
+        m.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dispatches_to_windows(self):
+        wf = WindowFocus()
+        with (
+            patch("claude_monitor.window_focus.sys") as mock_sys,
+            patch.object(wf, "_trigger_dictation_windows", AsyncMock(return_value=True)) as m,
+        ):
+            mock_sys.platform = "win32"
+            result = await wf.trigger_dictation()
+        assert result is True
+        m.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_linux_returns_false(self):
+        wf = WindowFocus()
+        with patch("claude_monitor.window_focus.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            result = await wf.trigger_dictation()
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _trigger_dictation_macos
+# ---------------------------------------------------------------------------
+
+
+class TestTriggerDictationMacos:
+    @pytest.mark.asyncio
+    async def test_success(self):
+        wf = WindowFocus()
+        proc = _fake_proc(returncode=0)
+        with patch(
+            "claude_monitor.window_focus.asyncio.create_subprocess_exec",
+            return_value=proc,
+        ):
+            result = await wf._trigger_dictation_macos()
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_nonzero_rc_returns_false(self):
+        wf = WindowFocus()
+        proc = _fake_proc(returncode=1, stderr=b"error")
+        with patch(
+            "claude_monitor.window_focus.asyncio.create_subprocess_exec",
+            return_value=proc,
+        ):
+            result = await wf._trigger_dictation_macos()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_false(self):
+        wf = WindowFocus()
+        proc = MagicMock()
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+        with patch(
+            "claude_monitor.window_focus.asyncio.create_subprocess_exec",
+            return_value=proc,
+        ):
+            result = await wf._trigger_dictation_macos()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_osascript_not_found_returns_false(self):
+        wf = WindowFocus()
+        with patch(
+            "claude_monitor.window_focus.asyncio.create_subprocess_exec",
+            side_effect=FileNotFoundError(),
+        ):
+            result = await wf._trigger_dictation_macos()
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _trigger_dictation_windows
+# ---------------------------------------------------------------------------
+
+
+class TestTriggerDictationWindows:
+    @pytest.mark.asyncio
+    async def test_success(self):
+        wf = WindowFocus()
+
+        async def fake_executor(_executor, fn, *args):
+            return True  # _send_win_h returns True
+
+        loop = MagicMock()
+        loop.run_in_executor = AsyncMock(side_effect=fake_executor)
+
+        with patch("claude_monitor.window_focus.asyncio.get_running_loop", return_value=loop):
+            result = await wf._trigger_dictation_windows()
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_send_input_failure_returns_false(self):
+        wf = WindowFocus()
+
+        async def fake_executor(_executor, fn, *args):
+            return False  # _send_win_h returns False (SendInput didn't send all)
+
+        loop = MagicMock()
+        loop.run_in_executor = AsyncMock(side_effect=fake_executor)
+
+        with patch("claude_monitor.window_focus.asyncio.get_running_loop", return_value=loop):
+            result = await wf._trigger_dictation_windows()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_false(self):
+        wf = WindowFocus()
+        loop = MagicMock()
+        loop.run_in_executor = AsyncMock(side_effect=RuntimeError("ctypes boom"))
+
+        with patch("claude_monitor.window_focus.asyncio.get_running_loop", return_value=loop):
+            result = await wf._trigger_dictation_windows()
+        assert result is False
