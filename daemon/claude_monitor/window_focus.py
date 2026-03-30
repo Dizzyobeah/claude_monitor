@@ -20,15 +20,23 @@ class WindowFocus:
     """Activate terminal windows via the best available method for the platform."""
 
     async def trigger_dictation(self) -> bool:
-        """Trigger macOS dictation by simulating the Globe/fn key double-press.
+        """Trigger system dictation.
 
-        Requires Accessibility permission for the daemon process in
-        System Settings > Privacy & Security > Accessibility.
+        macOS:   Simulates Globe/fn key double-press (requires Accessibility
+                 permission in System Settings > Privacy & Security).
+        Windows: Simulates Win+H to open Voice Typing (Windows 10 2004+).
+        Linux:   Not yet supported.
         """
-        if sys.platform != "darwin":
-            log.warning("Dictation trigger only supported on macOS")
+        if sys.platform == "darwin":
+            return await self._trigger_dictation_macos()
+        elif sys.platform == "win32":
+            return await self._trigger_dictation_windows()
+        else:
+            log.warning("Dictation trigger not yet supported on Linux")
             return False
 
+    async def _trigger_dictation_macos(self) -> bool:
+        """Trigger macOS dictation by simulating the Globe/fn key double-press."""
         # key code 63 = fn/Globe key on macOS
         script = (
             'tell application "System Events"\n'
@@ -57,6 +65,73 @@ class WindowFocus:
         except FileNotFoundError:
             log.error("osascript not found")
             return False
+
+    async def _trigger_dictation_windows(self) -> bool:
+        """Trigger Windows Voice Typing by simulating Win+H.
+
+        Uses the SendInput Win32 API via ctypes.  Requires Windows 10
+        version 2004 or later.
+        """
+        try:
+            result = await asyncio.get_running_loop().run_in_executor(
+                None,
+                self._send_win_h,
+            )
+            if result:
+                log.info("Dictation triggered via Win+H")
+            else:
+                log.warning("Win+H SendInput returned 0 — dictation may not have triggered")
+            return result
+        except Exception as exc:
+            log.error("Windows dictation error: %s", exc)
+            return False
+
+    @staticmethod
+    def _send_win_h() -> bool:
+        """Send Win+H keystroke via SendInput to trigger Voice Typing."""
+        import ctypes
+        import ctypes.wintypes
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+
+        VK_LWIN = 0x5B
+        VK_H = 0x48
+        KEYEVENTF_KEYUP = 0x0002
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [
+                ("wVk", ctypes.wintypes.WORD),
+                ("wScan", ctypes.wintypes.WORD),
+                ("dwFlags", ctypes.wintypes.DWORD),
+                ("time", ctypes.wintypes.DWORD),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+            ]
+
+        class INPUT(ctypes.Structure):
+            class _INPUT_UNION(ctypes.Union):
+                _fields_ = [("ki", KEYBDINPUT)]
+
+            _fields_ = [
+                ("type", ctypes.wintypes.DWORD),
+                ("_input", _INPUT_UNION),
+            ]
+
+        def _kbd(vk: int, flags: int = 0) -> INPUT:
+            inp = INPUT()
+            inp.type = 1  # INPUT_KEYBOARD
+            inp._input.ki.wVk = vk
+            inp._input.ki.dwFlags = flags
+            return inp
+
+        # Win down, H down, H up, Win up
+        inputs = (INPUT * 4)(
+            _kbd(VK_LWIN),
+            _kbd(VK_H),
+            _kbd(VK_H, KEYEVENTF_KEYUP),
+            _kbd(VK_LWIN, KEYEVENTF_KEYUP),
+        )
+        sent = user32.SendInput(4, ctypes.byref(inputs), ctypes.sizeof(INPUT))
+        return sent == 4
 
     async def focus(self, ref: WindowRef) -> bool:
         """Bring the terminal window to the front. Returns True on success."""
@@ -138,18 +213,23 @@ class WindowFocus:
         permission.  We unlink immediately after.
         """
         try:
+            loop = asyncio.get_running_loop()
 
             # Find the main window HWND for the given PID
-            hwnd = await asyncio.get_running_loop().run_in_executor(
-                None, self._find_hwnd_for_pid, ref.pid
-            )
+            hwnd = await loop.run_in_executor(None, self._find_hwnd_for_pid, ref.pid)
+
+            # Defensive fallback: if the PID has no visible HWND (e.g. pwsh.exe
+            # inside Windows Terminal), walk ancestor PIDs until we find one
+            # that does.  This handles cases where terminal_mapper returned a
+            # shell PID instead of the GUI terminal PID.
+            if not hwnd:
+                hwnd = await loop.run_in_executor(None, self._find_hwnd_by_ancestor_walk, ref.pid)
+
             if not hwnd:
                 log.warning("Could not find window for pid %d on Windows", ref.pid)
                 return False
 
-            result = await asyncio.get_running_loop().run_in_executor(
-                None, self._set_foreground_attached, hwnd, ref.pid
-            )
+            result = await loop.run_in_executor(None, self._set_foreground_attached, hwnd, ref.pid)
             if result:
                 log.info("Focused %s (pid %d)", ref.app_name, ref.pid)
             else:
@@ -199,9 +279,7 @@ class WindowFocus:
 
             # Also attach to the target thread (some compositors require this)
             if (  # noqa: SIM102
-                target_tid_val
-                and target_tid_val != our_tid_val
-                and target_tid_val != fg_tid_val
+                target_tid_val and target_tid_val != our_tid_val and target_tid_val != fg_tid_val
             ):
                 if user32.AttachThreadInput(our_tid_val, target_tid_val, True):
                     attached_to_target = True
@@ -242,6 +320,39 @@ class WindowFocus:
 
         user32.EnumWindows(EnumWindowsProc(callback), 0)
         return found or None
+
+    @staticmethod
+    def _find_hwnd_by_ancestor_walk(pid: int) -> int | None:
+        """Walk parent PIDs to find the first ancestor with a visible HWND.
+
+        On Windows, console shells (pwsh.exe, cmd.exe) don't own visible
+        windows — the HWND belongs to a GUI host like Windows Terminal.
+        This method walks up the process tree and returns the first visible
+        HWND it finds.
+        """
+        import psutil
+
+        try:
+            proc = psutil.Process(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return None
+
+        for _ in range(15):  # safety cap
+            try:
+                proc = proc.parent()
+                if proc is None:
+                    break
+                hwnd = WindowFocus._find_hwnd_for_pid(proc.pid)
+                if hwnd:
+                    log.debug(
+                        "Ancestor HWND walk: found hwnd for pid %d (%s)",
+                        proc.pid,
+                        proc.name(),
+                    )
+                    return hwnd
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                break
+        return None
 
     # ------------------------------------------------------------------ Linux
 
@@ -284,9 +395,7 @@ class WindowFocus:
             if proc.returncode == 0:
                 log.info("Focused pid %d via wmctrl", pid)
                 return True
-            log.debug(
-                "wmctrl failed (rc %d): %s", proc.returncode, stderr.decode().strip()
-            )
+            log.debug("wmctrl failed (rc %d): %s", proc.returncode, stderr.decode().strip())
             return False
         except asyncio.TimeoutError:
             log.warning("wmctrl timed out for pid %d", pid)
@@ -349,9 +458,7 @@ class WindowFocus:
             if proc.returncode == 0:
                 log.info("Focused pid %d via swaymsg", pid)
                 return True
-            log.debug(
-                "swaymsg failed (rc %d): %s", proc.returncode, stderr.decode().strip()
-            )
+            log.debug("swaymsg failed (rc %d): %s", proc.returncode, stderr.decode().strip())
             return False
         except asyncio.TimeoutError:
             log.warning("swaymsg timed out for pid %d", pid)

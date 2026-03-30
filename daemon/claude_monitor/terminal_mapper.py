@@ -80,14 +80,35 @@ MACOS_EXE_FRAGMENTS: dict[str, tuple[str, str]] = {
 _TERMINAL_EMULATOR_KEYS = frozenset(
     {
         # macOS
-        "iterm2", "ghostty", "wezterm-gui", "kitty", "alacritty", "warp", "terminal",
+        "iterm2",
+        "ghostty",
+        "wezterm-gui",
+        "kitty",
+        "alacritty",
+        "warp",
+        "terminal",
         # Linux
-        "gnome-terminal", "gnome-terminal-", "konsole", "xterm",
-        "xfce4-terminal", "tilix", "foot", "hyper",
+        "gnome-terminal",
+        "gnome-terminal-",
+        "konsole",
+        "xterm",
+        "xfce4-terminal",
+        "tilix",
+        "foot",
+        "hyper",
         # Windows
-        "windowsterminal", "cmd", "pwsh", "powershell",
+        "windowsterminal",
+        "cmd",
+        "pwsh",
+        "powershell",
     }
 )
+
+# Windows console shells (cmd, pwsh, powershell) don't own visible HWNDs --
+# the window belongs to a GUI host like Windows Terminal or conhost.  When we
+# match one of these, we record it but keep walking ancestors to find the GUI
+# terminal that actually owns the window.  Only used on Windows.
+_WINDOWS_CONSOLE_SHELL_KEYS = frozenset({"cmd", "pwsh", "powershell"})
 
 
 @dataclasses.dataclass
@@ -170,12 +191,18 @@ class TerminalMapper:
 
         # --- Name-based match (all platforms) ---
         # Prefer terminal emulators over editors: scan for the first entry
-        # in ancestor order (child → root) that matches any TERMINAL_APPS key.
+        # in ancestor order (child -> root) that matches any TERMINAL_APPS key.
         # Terminal keys come before editor keys in TERMINAL_APPS, but we also
         # do a two-pass scan: first looking only for terminal-emulator keys,
         # then for editor keys, so a terminal deeper in the chain wins over
         # an editor higher up.
+        #
+        # On Windows, console shells (cmd, pwsh, powershell) are technically
+        # terminal emulator keys but they don't own visible HWNDs.  We treat
+        # them like a fallback: record the match but keep walking ancestors
+        # to find a GUI terminal (e.g. WindowsTerminal) that owns the window.
         terminal_ref: WindowRef | None = None
+        shell_ref: WindowRef | None = None
         editor_ref: WindowRef | None = None
 
         for ancestor in ancestors:
@@ -189,9 +216,14 @@ class TerminalMapper:
                 key, display_name = match
                 ref = WindowRef(app=key, app_name=display_name, pid=ancestor.pid)
                 if key in _TERMINAL_EMULATOR_KEYS:
-                    # It's a terminal emulator — stop immediately.
-                    terminal_ref = ref
-                    break
+                    if sys.platform == "win32" and key in _WINDOWS_CONSOLE_SHELL_KEYS:
+                        # Console shell — record but keep looking for a GUI terminal.
+                        if shell_ref is None:
+                            shell_ref = ref
+                    else:
+                        # GUI terminal emulator — stop immediately.
+                        terminal_ref = ref
+                        break
                 elif editor_ref is None:
                     editor_ref = ref
                 # Don't break on editor: keep scanning for a terminal emulator.
@@ -205,8 +237,8 @@ class TerminalMapper:
             if exe_ref:
                 return exe_ref
 
-        # Fall back to editor match from name scan (if any).
-        return editor_ref
+        # Fall back to console shell match (Windows), then editor match.
+        return shell_ref or editor_ref
 
     # ------------------------------------------------------------------
     # Strategy 2 — TTY scan
