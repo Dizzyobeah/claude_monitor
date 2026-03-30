@@ -62,12 +62,27 @@ async def handle_hook(request: web.Request) -> web.Response:
 
 
 async def handle_status(request: web.Request) -> web.Response:
-    """Return current session states as JSON (for debugging)."""
+    """Return current session states as JSON (for debugging).
+
+    Sessions are returned sorted by display priority (attention-needing
+    first, then most recently updated) with ``last_update`` included so
+    callers can see when each session was last active.
+    """
     tracker: SessionTracker = request.app["tracker"]
     ble: BleManager | BleMultiManager | None = request.app.get("ble")
+    by_recency = sorted(
+        tracker.sessions.values(),
+        key=lambda s: s.last_update,
+        reverse=True,
+    )
     sessions = {
-        sid: {"state": info.state, "label": info.label, "metrics": info.metrics}
-        for sid, info in tracker.sessions.items()
+        info.session_id: {
+            "state": info.state,
+            "label": info.label,
+            "last_update": info.last_update,
+            "metrics": info.metrics,
+        }
+        for info in by_recency
     }
     return web.json_response(
         {

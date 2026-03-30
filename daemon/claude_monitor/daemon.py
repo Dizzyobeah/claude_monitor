@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import sys
 import time
 from collections.abc import Coroutine
@@ -296,13 +297,18 @@ class ClaudeMonitorDaemon:
 
             # Self-health watchdog: if the sync loop has stalled, exit so the
             # hook script can auto-restart a fresh daemon process.
+            # NOTE: sys.exit() raises SystemExit which is swallowed by asyncio
+            # tasks — it gets stored as the task exception and the supervisor
+            # restarts the task instead of exiting.  os._exit() bypasses all
+            # cleanup and terminates the process immediately, which is exactly
+            # what a watchdog needs when the event loop is stuck.
             stale = time.monotonic() - self._sync_heartbeat
             if stale > WATCHDOG_TIMEOUT:
                 log.critical(
                     "Sync loop stalled for %.1fs (limit %.1fs) — exiting for auto-restart",
                     stale, WATCHDOG_TIMEOUT,
                 )
-                sys.exit(1)
+                os._exit(1)
 
             if self.tracker.is_idle:
                 log.info("All sessions ended — shutting down.")
