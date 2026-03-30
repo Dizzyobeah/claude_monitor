@@ -18,6 +18,8 @@ TouchEvent TouchHandler::update() {
         case State::IDLE:
             if (isTouched && (now - _lastReleaseTime > DEBOUNCE_MS)) {
                 _touchDownTime = now;
+                _lastX = tp.x;
+                _lastY = tp.y;
                 _state = State::PRESSED;
             }
             break;

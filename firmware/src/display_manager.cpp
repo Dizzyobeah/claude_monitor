@@ -66,6 +66,7 @@ void DisplayManager::update(uint32_t now, SessionStore* sessions, bool bleConnec
             _lcd->fillScreen(Colors::BG_DARK);
             _lastIdleScreen = IdleScreen::WAITING_BLE;
             _lastFooterState = SessionState::DISCONNECTED;  // force footer redraw on reconnect
+            _lastDisplayRank = 0xFF;
         }
         drawWaitingForBle();
         return;
@@ -80,6 +81,7 @@ void DisplayManager::update(uint32_t now, SessionStore* sessions, bool bleConnec
             _lcd->fillScreen(Colors::BG_DARK);
             _lastIdleScreen = IdleScreen::NO_SESSIONS;
             _lastFooterState = SessionState::DISCONNECTED;  // force footer redraw when session appears
+            _lastDisplayRank = 0xFF;
         }
         drawNoSessions();
         return;
@@ -135,11 +137,13 @@ void DisplayManager::update(uint32_t now, SessionStore* sessions, bool bleConnec
         }
     }
 
-    // 2. Footer: only redrawn on state transitions — content is static per-state.
+    // 2. Footer: redrawn on state transitions or session switches.
     //    Animated elements (blinking arrows) live inside the sprite above.
-    if (displayed->state != _lastFooterState) {
-        drawFooter(displayed, sessions->count(), sessions->displayRank());
+    uint8_t rank = sessions->displayRank();
+    if (displayed->state != _lastFooterState || rank != _lastDisplayRank) {
+        drawFooter(displayed, sessions->count(), rank);
         _lastFooterState = displayed->state;
+        _lastDisplayRank = rank;
     }
 }
 
@@ -182,10 +186,9 @@ void DisplayManager::drawFooter(Session* session, uint8_t sessionCount, uint8_t 
         _lcd->drawString(sidLabel, SCREEN_W / 2, footerY + 50);
     }
 
-    // --- Multi-session dot indicator ---
-    // Drawn only when there are multiple sessions. Filled dot = current session,
-    // empty dot = other session. Max 8 sessions (MAX_SESSIONS), dots are 6px
-    // diameter with 10px spacing, centered horizontally at the bottom of footer.
+    // --- Multi-session navigation: arrows + dot indicator ---
+    // Drawn only when there are multiple sessions. Navigation arrows on left/right
+    // edges for finger tapping; dots in the centre show which session is active.
     if (sessionCount > 1) {
         static constexpr int16_t DOT_R    = 3;   // dot radius
         static constexpr int16_t DOT_GAP  = 10;  // centre-to-centre spacing
@@ -200,6 +203,31 @@ void DisplayManager::drawFooter(Session* session, uint8_t sessionCount, uint8_t 
                 _lcd->drawCircle(dx, dotY, DOT_R, Colors::TEXT_DIM);
             }
         }
+
+        // Navigation arrows — big filled triangles at left/right edges,
+        // vertically centred between state text and dots for easy finger taps.
+        static constexpr int16_t ARROW_H  = 14;  // half-height (28px total)
+        static constexpr int16_t ARROW_W  = 16;  // width (tip to base)
+        int16_t arrowY = footerY + 46;           // between text (y+22) and dots (y+73)
+        uint16_t arrowColor = Colors::TEXT_DIM;
+
+        // Left arrow  (◀) — tip points left
+        int16_t lx = 14;  // tip X
+        _lcd->fillTriangle(
+            lx,             arrowY,              // tip
+            lx + ARROW_W,   arrowY - ARROW_H,    // top-right
+            lx + ARROW_W,   arrowY + ARROW_H,    // bottom-right
+            arrowColor
+        );
+
+        // Right arrow (▶) — tip points right
+        int16_t rx = SCREEN_W - 14;  // tip X
+        _lcd->fillTriangle(
+            rx,             arrowY,              // tip
+            rx - ARROW_W,   arrowY - ARROW_H,    // top-left
+            rx - ARROW_W,   arrowY + ARROW_H,    // bottom-left
+            arrowColor
+        );
     }
 }
 

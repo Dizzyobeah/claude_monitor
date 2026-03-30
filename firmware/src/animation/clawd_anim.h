@@ -375,8 +375,7 @@ private:
                     canvas->fillRect(curX, curY, 10, 3, Colors::CLAUDE_ORANGE);
                 }
 
-                // Blinking inward-pointing arrows near bottom of sprite (above footer)
-                _drawAttentionArrows(canvas, canvasW, canvasH, Colors::CYAN_INFO);
+                // Navigation arrows are now in the footer — no sprite arrows for INPUT.
                 break;
             }
 

@@ -70,19 +70,14 @@ async def handle_status(request: web.Request) -> web.Response:
     """
     tracker: SessionTracker = request.app["tracker"]
     ble: BleManager | BleMultiManager | None = request.app.get("ble")
-    by_recency = sorted(
-        tracker.sessions.values(),
-        key=lambda s: s.last_update,
-        reverse=True,
-    )
+    ordered = tracker.get_ordered_sessions()
     sessions = {
         info.session_id: {
             "state": info.state,
             "label": info.label,
             "last_update": info.last_update,
-            "metrics": info.metrics,
         }
-        for info in by_recency
+        for info in ordered
     }
     return web.json_response(
         {

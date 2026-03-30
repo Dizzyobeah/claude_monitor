@@ -138,6 +138,20 @@ void SessionStore::cycleNext() {
     _stateChanged = true;
 }
 
+void SessionStore::cyclePrev() {
+    if (_count <= 1) return;
+    int start = _displayIdx;
+    uint8_t steps = 0;
+    do {
+        _displayIdx = (_displayIdx == 0) ? MAX_SESSIONS - 1 : _displayIdx - 1;
+        if (++steps > MAX_SESSIONS) {
+            recount();
+            return;
+        }
+    } while (!_sessions[_displayIdx].active && _displayIdx != start);
+    _stateChanged = true;
+}
+
 void SessionStore::update(uint32_t now) {
     // Auto-carousel: cycle sessions every CAROUSEL_INTERVAL_MS
     // But don't carousel away from sessions needing attention

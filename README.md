@@ -200,4 +200,4 @@ This project uses the **E32R28T** (LCDWIKI) board. [Purchase on Amazon](https://
 
 The display fits in the [Aura Smart Weather Forecast Display](https://makerworld.com/en/models/1382304-aura-smart-weather-forecast-display#profileId-1441764) case from MakerWorld.
 
-![Aura Case](images/aura%20main.png)
+![Aura Case](images/IMG_3388.jpeg)
