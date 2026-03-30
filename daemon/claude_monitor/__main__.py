@@ -138,14 +138,23 @@ def main() -> None:
         pass
     finally:
         # Cancel all pending tasks so coroutines can clean up (e.g. runner.cleanup).
+        # BLE cleanup (bleak/CoreBluetooth) can hang indefinitely during a
+        # disconnect cycle, so we impose a hard timeout — if tasks don't finish
+        # within 5 seconds, we abandon them and close the loop anyway.
         try:
             pending = asyncio.all_tasks(loop)
             if pending:
                 for task in pending:
                     task.cancel()
-                loop.run_until_complete(
-                    asyncio.gather(*pending, return_exceptions=True)
-                )
+                try:
+                    loop.run_until_complete(
+                        asyncio.wait_for(
+                            asyncio.gather(*pending, return_exceptions=True),
+                            timeout=5.0,
+                        )
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    log.warning("Cleanup timed out after 5s — forcing shutdown")
         except RuntimeError:
             # Loop already closed or no running loop — nothing to clean up
             pass
