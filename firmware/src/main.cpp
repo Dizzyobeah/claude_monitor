@@ -112,14 +112,8 @@ void setup() {
 
     // Hardware watchdog: reset the device if loop() stalls for more than 15 seconds.
     // This recovers from BLE stack hangs or display deadlocks without manual intervention.
-    // esp_task_wdt_init() API changed in IDF 5.x to take a config struct.
-    esp_task_wdt_config_t wdt_cfg = {
-        .timeout_ms = 15000,
-        .idle_core_mask = 0,
-        .trigger_panic = true,
-    };
-    esp_task_wdt_init(&wdt_cfg);
-    esp_task_wdt_add(NULL);  // Subscribe the current (loop) task
+    esp_task_wdt_init(15, true);   // timeout_s=15, panic=true
+    esp_task_wdt_add(NULL);        // Subscribe the current (loop) task
     Serial.println("Watchdog armed (15s timeout)");
 }
 
@@ -193,15 +187,41 @@ void loop() {
     if (t3 - t2 > LOOP_WARN_MS) Serial.printf("[SLOW] Sessions: %ums\n", t3 - t2);
 
     // --- Touch ---
+    // Footer arrow touch zones for session navigation:
+    //   Left  arrow: x < 50, y >= footerTop (240)
+    //   Right arrow: x > 190, y >= footerTop (240)
+    //   Centre/animation zone: existing tap/long-press behaviour
+    static constexpr int16_t FOOTER_TOP = 240;  // HEADER_H + ANIM_H
+    static constexpr int16_t ARROW_ZONE_W = 50;
+
     TouchEvent touchEvt = touch.update();
     if (touchEvt == TouchEvent::TAP) {
-        const char* sid = sessions.getDisplayedSid();
-        if (sid[0] != '\0' && protocol.isConnected()) {
-            protocol.sendTap(sid);
-        }
-        Session* current = sessions.getDisplayed();
-        if (current && !stateNeedsAttention(current->state) && sessions.count() > 1) {
-            sessions.cycleNext();
+        int16_t tx = touch.lastX();
+        int16_t ty = touch.lastY();
+
+        if (ty >= FOOTER_TOP && sessions.count() > 1) {
+            // Tap in footer zone — check for arrow navigation
+            if (tx < ARROW_ZONE_W) {
+                sessions.cyclePrev();
+            } else if (tx > SCREEN_W - ARROW_ZONE_W) {
+                sessions.cycleNext();
+            } else {
+                // Centre footer tap — send tap to daemon
+                const char* sid = sessions.getDisplayedSid();
+                if (sid[0] != '\0' && protocol.isConnected()) {
+                    protocol.sendTap(sid);
+                }
+            }
+        } else {
+            // Animation zone tap — send tap + cycle if not attention-needing
+            const char* sid = sessions.getDisplayedSid();
+            if (sid[0] != '\0' && protocol.isConnected()) {
+                protocol.sendTap(sid);
+            }
+            Session* current = sessions.getDisplayed();
+            if (current && !stateNeedsAttention(current->state) && sessions.count() > 1) {
+                sessions.cycleNext();
+            }
         }
     } else if (touchEvt == TouchEvent::LONG_PRESS) {
         const char* sid = sessions.getDisplayedSid();

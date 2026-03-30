@@ -173,15 +173,13 @@ class SessionTracker:
             self._remove_session(sid)
 
     def get_ordered_sessions(self) -> list[SessionInfo]:
-        """Return sessions ordered by priority (attention-needing first)."""
-        attention_states = {"PERMISSION", "INPUT", "ERROR"}
+        """Return sessions ordered by most recently updated first.
+
+        The display should always show the session with the latest activity
+        so the user sees what is happening *right now*, regardless of state.
+        """
         sessions = list(self.sessions.values())
-        sessions.sort(
-            key=lambda s: (
-                0 if s.state in attention_states else 1,
-                -s.last_update,  # Most recently updated first within each tier
-            )
-        )
+        sessions.sort(key=lambda s: -s.last_update)
         return sessions
 
     @staticmethod

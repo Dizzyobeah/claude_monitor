@@ -25,6 +25,7 @@ private:
 
     SessionState _currentState    = SessionState::DISCONNECTED;
     SessionState _lastFooterState = SessionState::DISCONNECTED;
+    uint8_t _lastDisplayRank = 0xFF;  // Force first footer draw
 
     // Tracks the last full-screen idle/disconnected draw so we only repaint on
     // transitions — same pattern as footer, avoids per-frame fillScreen flicker.

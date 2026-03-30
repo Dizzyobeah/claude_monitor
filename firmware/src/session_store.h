@@ -25,6 +25,7 @@ public:
     const char* getDisplayedSid();
 
     void cycleNext();
+    void cyclePrev();
     void update(uint32_t now);        // Auto-carousel logic
 
     uint8_t count() const { return _count; }
