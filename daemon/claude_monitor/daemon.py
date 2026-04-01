@@ -70,6 +70,8 @@ class ClaudeMonitorDaemon:
         # Event to wake the sync loop immediately when state changes,
         # instead of waiting for the next poll interval.
         self._sync_wake: asyncio.Event = asyncio.Event()
+        # Set True during OTA to pause the sync-loop watchdog.
+        self._ota_in_progress: bool = False
 
     async def run(self) -> None:
         """Start all daemon components as independent tasks."""
@@ -126,6 +128,7 @@ class ClaudeMonitorDaemon:
         """Run the aiohttp server for hook events."""
         app = create_app(self.tracker, ble=self.ble)
         app["sync_wake"] = self._sync_wake
+        app["daemon"] = self
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", self.config.http_port)
@@ -303,7 +306,7 @@ class ClaudeMonitorDaemon:
             # cleanup and terminates the process immediately, which is exactly
             # what a watchdog needs when the event loop is stuck.
             stale = time.monotonic() - self._sync_heartbeat
-            if stale > WATCHDOG_TIMEOUT:
+            if stale > WATCHDOG_TIMEOUT and not self._ota_in_progress:
                 log.critical(
                     "Sync loop stalled for %.1fs (limit %.1fs) — exiting for auto-restart",
                     stale, WATCHDOG_TIMEOUT,

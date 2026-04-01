@@ -100,22 +100,47 @@ async def handle_ota(request: web.Request) -> web.Response:
 
     log.info("OTA: received %d bytes, sending to ESP32...", size)
 
-    # Step 1: Send ota_begin command with firmware size
+    # Pause the sync-loop watchdog during OTA — the BLE writes block the event loop.
+    daemon = request.app.get("daemon")
+    if daemon:
+        daemon._ota_in_progress = True
+
+    # Step 1: Send ota_begin and wait for ACK
+    ble.prepare_ota_ack()
     begin_msg = json.dumps({"cmd": "ota_begin", "size": size}) + "\n"
     await ble.send(begin_msg)
+    if not await ble.wait_for_ota_ack(timeout=10):
+        return web.Response(status=500, text="ESP32 failed to start OTA")
 
-    # Step 2: Send firmware in chunks via BLE writes
-    # BLE MTU is typically 247 bytes usable; use 200-byte chunks for safety
-    chunk_size = 200
+    # Step 2: Send firmware in raw binary chunks.
+    # Send BATCH_SIZE chunks before waiting for an ACK to reduce round-trip
+    # overhead.  The ESP32 processes each chunk immediately in _onWrite() and
+    # sets an ACK flag that update() drains — we only need the ACK to confirm
+    # the batch was received, not every individual chunk.
+    chunk_size = 512
+    batch_size = 16  # ACK every 16 chunks (8 KB)
     sent = 0
+    chunks_since_ack = 0
     for i in range(0, size, chunk_size):
         chunk = firmware[i : i + chunk_size]
-        await ble.send(chunk.decode("latin-1"))  # raw binary via BLE write
+        await ble.send_bytes(chunk)
         sent += len(chunk)
+        chunks_since_ack += 1
+        if chunks_since_ack >= batch_size or sent >= size:
+            if not await ble.wait_for_ota_ack(timeout=30):
+                if daemon:
+                    daemon._ota_in_progress = False
+                return web.Response(status=500, text=f"OTA ACK failed at {sent} bytes")
+            chunks_since_ack = 0
+        if sent % 32768 < chunk_size:
+            log.info("OTA: %d / %d bytes (%.0f%%)", sent, size, 100 * sent / size)
 
-    # Step 3: Send ota_end command to trigger validation + reboot
+    # Step 3: Send ota_end to trigger validation + reboot
     end_msg = json.dumps({"cmd": "ota_end"}) + "\n"
     await ble.send(end_msg)
+
+    if daemon:
+        daemon._ota_in_progress = False
 
     log.info("OTA: sent %d bytes to ESP32, awaiting reboot", sent)
     return web.Response(text=f"OTA sent: {sent} bytes. ESP32 will reboot.")

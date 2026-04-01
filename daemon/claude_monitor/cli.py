@@ -72,12 +72,17 @@ def ota(firmware_path: str, base_url: str = DEFAULT_URL) -> None:
 
     try:
         print("Uploading to daemon...")
-        with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=600) as resp:  # noqa: S310
             result = resp.read().decode()
             print(f"Result: {result}")
     except urllib.error.HTTPError as e:
-        print(f"OTA failed: {e.code} {e.read().decode()}", file=sys.stderr)
+        body = e.read().decode()
+        print(f"OTA failed ({e.code}): {body}", file=sys.stderr)
         sys.exit(1)
-    except (urllib.error.URLError, OSError):
-        print("Claude Monitor daemon is not running.", file=sys.stderr)
+    except urllib.error.URLError:
+        print("Cannot connect to daemon — is it running?", file=sys.stderr)
+        print("Start it with: cd daemon && uv run claude-monitor", file=sys.stderr)
+        sys.exit(1)
+    except TimeoutError:
+        print("OTA timed out — BLE transfer may still be in progress.", file=sys.stderr)
         sys.exit(1)

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include "ota.h"
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -55,6 +56,7 @@ public:
     void sendTap(const char* sid);
     void sendDictate(const char* sid);
     void sendReady();
+    void setOtaManager(OtaManager* ota) { _ota = ota; }
 
     bool isConnected() const { return _connected; }
     bool isPasskeyActive() const { return _passkeyActive; }
@@ -90,11 +92,16 @@ private:
 
     // Queue for incoming raw BLE data (BLE callback runs on core 0).
     // Protected by _rxMux spinlock — safe across the two ESP32 cores.
-    static constexpr size_t RX_BUF_SIZE = 512;
+    static constexpr size_t RX_BUF_SIZE = 520;
     char _rxBuf[RX_BUF_SIZE];
     size_t _rxLen = 0;
     bool _rxReady = false;
     portMUX_TYPE _rxMux = portMUX_INITIALIZER_UNLOCKED;
+
+    OtaManager* _ota = nullptr;
+    bool _otaMode = false;
+    volatile bool _otaAckPending = false;  // Set by _onWrite, consumed by update()
+    volatile bool _otaAckOk = false;
 
     bool parseLine(const char* line);
     void sendJson(const char* json);

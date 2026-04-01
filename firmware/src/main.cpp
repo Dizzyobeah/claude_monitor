@@ -108,6 +108,7 @@ void setup() {
     digitalWrite(PIN_LED_B, HIGH);
 
     // Start BLE (begins advertising immediately)
+    protocol.setOtaManager(&ota);
     protocol.begin();
 
     // Hardware watchdog: reset the device if loop() stalls for more than 15 seconds.
@@ -167,12 +168,8 @@ void loop() {
                 }
                 break;
             case Command::OTA_BEGIN:
-                if (cmd.otaSize > 0) {
-                    ota.beginOta(cmd.otaSize);
-                }
-                break;
             case Command::OTA_END:
-                ota.finishOta();
+                // Handled directly by BLE protocol (OTA mode)
                 break;
             default:
                 break;
