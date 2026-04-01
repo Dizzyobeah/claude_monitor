@@ -46,5 +46,5 @@ private:
     Animation* animForState();
     void drawFooter(Session* session, uint8_t sessionCount, uint8_t displayRank);
     void drawWaitingForBle();
-    void drawNoSessions();
+    void drawNoSessionsFooter();
 };

@@ -46,6 +46,9 @@ class BleManager:
         self._loop: asyncio.AbstractEventLoop | None = None
         # Signals the _connect coroutine to abort when a send error is detected
         self._force_disconnect: asyncio.Event | None = None
+        # OTA ACK: set by _on_notify when an ota_ack message arrives
+        self._ota_ack: asyncio.Event | None = None
+        self._ota_ack_ok: bool = False
 
     @property
     def connected(self) -> bool:
@@ -106,6 +109,34 @@ class BleManager:
             # Wake the _connect coroutine so it exits and the run() loop retries
             if self._force_disconnect:
                 self._force_disconnect.set()
+
+    async def send_bytes(self, data: bytes) -> None:
+        """Send raw bytes to the ESP32 (for OTA firmware chunks).
+
+        Uses Write Without Response for throughput — our application-level
+        ACK (wait_for_ota_ack) handles reliability at the batch level.
+        """
+        if not self._connected or not self._client:
+            return
+        await self._client.write_gatt_char(CHAR_RX_UUID, data, response=False)
+
+    def prepare_ota_ack(self) -> None:
+        """Initialize the OTA ACK event. Call before sending ota_begin."""
+        if self._ota_ack is None:
+            self._ota_ack = asyncio.Event()
+        self._ota_ack.clear()
+
+    async def wait_for_ota_ack(self, timeout: float = 10.0) -> bool:
+        """Wait for an OTA ACK notification from the ESP32. Returns ok status."""
+        if self._ota_ack is None:
+            self._ota_ack = asyncio.Event()
+        self._ota_ack.clear()
+        try:
+            await asyncio.wait_for(self._ota_ack.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            log.warning("OTA ACK timeout after %.1fs", timeout)
+            return False
+        return self._ota_ack_ok
 
     async def _scan(self) -> BLEDevice | None:
         """Scan using a continuous scanner and return the BLEDevice the moment
@@ -330,13 +361,20 @@ class BleManager:
             return None
 
     def _on_notify(self, characteristic: BleakGATTCharacteristic, data: bytearray) -> None:
-        """Called by bleak when the ESP32 sends a notification (tap, ready, pong)."""
+        """Called by bleak when the ESP32 sends a notification (tap, ready, pong, ota_ack)."""
         line = data.decode("utf-8", errors="replace").strip()
         if not line:
             return
 
         try:
             msg = json.loads(line)
+            # Intercept OTA ACKs — wake the wait_for_ota_ack() caller
+            if msg.get("cmd") == "ota_ack":
+                log.info("OTA ACK received: %s", msg)
+                if self._ota_ack and self._loop:
+                    self._ota_ack_ok = msg.get("ok", False)
+                    self._loop.call_soon_threadsafe(self._ota_ack.set)
+                return
             if self._on_message and self._loop:
                 asyncio.run_coroutine_threadsafe(self._on_message(msg), self._loop)
         except json.JSONDecodeError:

@@ -163,8 +163,17 @@ void BleProtocol::update() {
     }
     portEXIT_CRITICAL_SAFE(&_rxMux);
 
+    // Send OTA chunk ACK from the main thread (notify isn't safe from BLE callback).
+    if (_otaAckPending) {
+        _otaAckPending = false;
+        char ack[48];
+        snprintf(ack, sizeof(ack), "{\"cmd\":\"ota_ack\",\"ok\":%s,\"n\":%u}",
+                 _otaAckOk ? "true" : "false",
+                 _ota ? (unsigned)_ota->received() : 0u);
+        sendJson(ack);
+    }
+
     if (hasData) {
-        // May contain multiple JSON messages separated by newlines
         char* line = strtok(local, "\n\r");
         while (line) {
             if (strlen(line) > 0) parseLine(line);
@@ -211,6 +220,15 @@ void BleProtocol::_onDisconnect() {
 }
 
 void BleProtocol::_onWrite(const uint8_t* data, size_t length) {
+    // In OTA mode, write chunks directly to flash from the BLE callback thread.
+    // The ACK is sent by update() on the main thread since notify() isn't safe
+    // to call from the BLE callback context.
+    if (_otaMode && _ota) {
+        _otaAckOk = _ota->writeChunk(data, length);
+        _otaAckPending = true;
+        return;
+    }
+
     if (length >= RX_BUF_SIZE) length = RX_BUF_SIZE - 1;
     portENTER_CRITICAL_SAFE(&_rxMux);
     memcpy(_rxBuf, data, length);
@@ -260,10 +278,19 @@ bool BleProtocol::parseLine(const char* line) {
         parsed.brightness = doc["brightness"] | 255;
         parsed.theme = doc["theme"] | 0xFF;  // 0xFF = no change
     } else if (strcmp(cmd, "ota_begin") == 0) {
-        parsed.type = Command::OTA_BEGIN;
-        parsed.otaSize = doc["size"] | 0;
+        if (_ota) {
+            uint32_t sz = doc["size"] | 0;
+            bool ok = _ota->beginOta(sz);
+            _otaMode = ok;
+            char ack[48];
+            snprintf(ack, sizeof(ack), "{\"cmd\":\"ota_ack\",\"ok\":%s}", ok ? "true" : "false");
+            sendJson(ack);
+        }
+        return true;
     } else if (strcmp(cmd, "ota_end") == 0) {
-        parsed.type = Command::OTA_END;
+        _otaMode = false;
+        if (_ota) _ota->finishOta();  // reboots on success
+        return true;
     } else {
         return false;
     }

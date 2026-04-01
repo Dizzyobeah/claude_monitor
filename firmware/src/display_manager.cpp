@@ -74,16 +74,38 @@ void DisplayManager::update(uint32_t now, SessionStore* sessions, bool bleConnec
 
     Session* displayed = sessions->getDisplayed();
 
-    // --- NO SESSIONS: draw full-screen idle screen only on transition ---
+    // --- NO SESSIONS: show IDLE character with "NO SESSIONS" footer ---
     if (!displayed) {
-        _idlePhase += elapsed;
         if (_lastIdleScreen != IdleScreen::NO_SESSIONS) {
             _lcd->fillScreen(Colors::BG_DARK);
             _lastIdleScreen = IdleScreen::NO_SESSIONS;
-            _lastFooterState = SessionState::DISCONNECTED;  // force footer redraw when session appears
+            _lastFooterState = SessionState::DISCONNECTED;
             _lastDisplayRank = 0xFF;
+            // Set up IDLE animation for the character sprite
+            _currentState = SessionState::IDLE;
+            _clawdAnim.setState(SessionState::IDLE);
+            _clawdAnim.begin();
+            _animDirty = true;
+            // Draw the "NO SESSIONS" footer once
+            drawNoSessionsFooter();
         }
-        drawNoSessions();
+        // Animate the IDLE character — same rendering path as active sessions
+        _clawdAnim.update(elapsed);
+        _animDirty = _clawdAnim.isDirty();
+        if (_animDirty) {
+            if (_canvas) {
+                static constexpr int16_t BAND_H = ANIM_DIRTY_Y1 - ANIM_DIRTY_Y0;
+                _canvas->fillScreen(Colors::BG_DARK);
+                _clawdAnim.draw(_canvas, 0, -ANIM_DIRTY_Y0, SCREEN_W, ANIM_H);
+                const uint16_t* buf = reinterpret_cast<const uint16_t*>(_canvas->getBuffer());
+                _lcd->startWrite();
+                _lcd->pushImage(0, HEADER_H + ANIM_DIRTY_Y0, SCREEN_W, BAND_H, buf);
+                _lcd->endWrite();
+            } else {
+                _lcd->fillRect(0, HEADER_H, SCREEN_W, ANIM_H, Colors::BG_DARK);
+                _clawdAnim.draw(_lcd, 0, HEADER_H, SCREEN_W, ANIM_H);
+            }
+        }
         return;
     }
 
@@ -314,29 +336,22 @@ void DisplayManager::drawPasskeyOverlay(uint32_t passkey) {
 }
 
 // ---------------------------------------------------------------------------
-// No sessions — full-screen. Static text drawn once on transition;
-// only the breathing dot is redrawn each frame using _idlePhase.
+// No sessions footer — static footer drawn once when entering the
+// no-sessions state.  The animation zone uses the normal IDLE character.
 // ---------------------------------------------------------------------------
-void DisplayManager::drawNoSessions() {
-    // Static labels — cheap to redraw (no flicker risk, just text on dark bg)
-    _lcd->setTextColor(Colors::TEXT_DIM);
+void DisplayManager::drawNoSessionsFooter() {
+    int16_t footerY = HEADER_H + ANIM_H;
+
+    _lcd->fillRect(0, footerY, SCREEN_W, FOOTER_H, Colors::BG_PANEL);
+    _lcd->drawFastHLine(0, footerY, SCREEN_W, Colors::CLAUDE_ORANGE);
+
+    _lcd->setTextColor(Colors::BLUE_IDLE);
     _lcd->setTextSize(2);
     _lcd->setTextDatum(lgfx::middle_center);
-    _lcd->drawString("Claude Monitor", SCREEN_W / 2, SCREEN_H / 2 - 30);
+    _lcd->drawString("NO SESSIONS", SCREEN_W / 2, footerY + 22);
 
+    _lcd->setTextColor(Colors::TEXT_DIM);
     _lcd->setTextSize(1);
-    _lcd->drawString("No active sessions",        SCREEN_W / 2, SCREEN_H / 2 + 10);
-    _lcd->drawString("Waiting for Claude Code...", SCREEN_W / 2, SCREEN_H / 2 + 30);
-
-    _lcd->setTextColor(_lcd->color565(0, 60, 80));
-    _lcd->drawString("BLE connected", SCREEN_W / 2, SCREEN_H / 2 + 55);
-
-    // Animated breathing dot — erase old position then redraw with new brightness
-    uint8_t angle = (uint8_t)((_idlePhase * 256) / 3000);
-    int8_t breath = isin(angle);
-    uint8_t bright = 50 + (breath + 127) * 50 / 254;
-    int16_t dotX = SCREEN_W / 2;
-    int16_t dotY = SCREEN_H / 2 + 80;
-    _lcd->fillCircle(dotX, dotY, 6, Colors::BG_DARK);  // erase with 1px margin
-    _lcd->fillCircle(dotX, dotY, 5, _lcd->color565(bright, bright / 2, 0));
+    _lcd->setTextDatum(lgfx::middle_center);
+    _lcd->drawString("Waiting for Claude Code...", SCREEN_W / 2, footerY + 50);
 }

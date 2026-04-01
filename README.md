@@ -23,6 +23,8 @@ Zero configuration. No WiFi credentials, no IP addresses, no serial port selecti
 
 ### 1. Flash the ESP32
 
+Connect the ESP32 to your computer with a USB-C cable. The initial flash must be done over USB — subsequent updates can be pushed wirelessly via OTA (see below).
+
 Requires [PlatformIO](https://platformio.org/install/cli).
 
 ```bash
@@ -39,6 +41,46 @@ pio run -e cyd_cap -t upload        # Capacitive touch (CST820)
 ```
 
 Power on the display with any USB power source. It will show a pulsing Bluetooth icon while waiting for a connection.
+
+#### OTA Firmware Updates
+
+After the initial USB flash, you can update the firmware wirelessly over BLE — no cable needed.
+
+**1. Build the new firmware:**
+
+```bash
+cd firmware
+pio run -e e32r28t          # or your board variant
+```
+
+This produces a firmware binary at:
+```
+firmware/.pio/build/e32r28t/firmware.bin
+```
+
+**2. Make sure the daemon is running and BLE-connected:**
+
+```bash
+cd daemon
+uv run claude-monitor status
+```
+
+You should see `BLE connected: yes`.
+
+**3. Push the update:**
+
+```bash
+cd daemon
+uv run claude-monitor ota ../firmware/.pio/build/e32r28t/firmware.bin
+```
+
+The ESP32 reboots automatically when done and the daemon reconnects within a few seconds.
+
+**Important notes:**
+- The ESP32 must be connected via BLE — OTA does not work over WiFi
+- Flash usage is at ~95% with all features enabled. If the firmware grows significantly, you may need to switch to a larger partition scheme in `platformio.ini` (e.g. `board_build.partitions = min_spiffs.csv`)
+- If an OTA update fails mid-transfer, the ESP32 stays on its current firmware — the secondary partition is only activated after a successful write + validation
+- The first flash must always be done via USB (`pio run -t upload`)
 
 ### 2. Install the Claude Code plugin
 
@@ -116,57 +158,6 @@ asyncio-based, installed with `uv run claude-monitor`.
 ### Hook Script (`hooks/`)
 
 Packaged as a Claude Code plugin (`.claude-plugin/plugin.json`). A single bash script is registered for 12 Claude Code events via `hooks/hooks.json`. Reads the hook JSON from stdin and POSTs it to the daemon with TTY/PPID metadata for terminal identification.
-
-## OTA Firmware Updates
-
-You can update the ESP32 firmware wirelessly over BLE — no USB cable needed after the initial flash.
-
-### How it works
-
-1. You build the new firmware on your computer
-2. The `claude-monitor ota` command sends the binary to the running daemon
-3. The daemon pushes it to the ESP32 over BLE in chunks
-4. The ESP32 writes it to a secondary flash partition, validates it, and reboots
-5. The daemon auto-reconnects to the updated display
-
-### Step-by-step
-
-**1. Build the new firmware:**
-
-```bash
-cd firmware
-pio run -e e32r28t          # or your board variant
-```
-
-This produces a firmware binary at:
-```
-firmware/.pio/build/e32r28t/firmware.bin
-```
-
-**2. Make sure the daemon is running and BLE-connected:**
-
-```bash
-cd daemon
-uv run claude-monitor status
-```
-
-You should see `BLE connected: yes`.
-
-**3. Push the update:**
-
-```bash
-cd daemon
-uv run claude-monitor ota ../firmware/.pio/build/e32r28t/firmware.bin
-```
-
-The command will show progress and the ESP32 will reboot automatically when done. The daemon reconnects within a few seconds.
-
-### Important notes
-
-- The ESP32 must be connected via BLE — OTA does not work over WiFi
-- Flash usage is at ~95% with all features enabled. If the firmware grows significantly, you may need to switch to a larger partition scheme in `platformio.ini` (e.g. `board_build.partitions = min_spiffs.csv`)
-- If an OTA update fails mid-transfer, the ESP32 stays on its current firmware — the secondary partition is only activated after a successful write + validation
-- The first flash must always be done via USB (`pio run -t upload`)
 
 ## Uninstall
 
