@@ -24,6 +24,9 @@ daemon/.venv
 firmware/.pio/
 daemon/claude_monitor/__pycache__/
 
+# Auto-generated version file (hatch-vcs)
+daemon/claude_monitor/_version.py
+
 # Claude
 .claude/agent-memory/
 .claude/settings.local.json
