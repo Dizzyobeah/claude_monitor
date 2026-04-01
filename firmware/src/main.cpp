@@ -16,6 +16,11 @@
 #include "theme.h"
 #include "ota.h"
 
+// Version injected by inject_version.py at build time via -DFW_VERSION
+#ifndef FW_VERSION
+#define FW_VERSION "dev"
+#endif
+
 static LGFX lcd;
 static BleProtocol protocol;
 static SessionStore sessions;
@@ -67,7 +72,7 @@ void updateLED(SessionState state) {
 
 void setup() {
     Serial.begin(115200);
-    Serial.println("\n=== Claude Monitor (BLE) ===");
+    Serial.printf("\n=== Claude Monitor %s (BLE) ===\n", FW_VERSION);
 
     // Print reset reason to diagnose reboots
     esp_reset_reason_t reason = esp_reset_reason();
