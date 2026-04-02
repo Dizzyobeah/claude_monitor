@@ -47,7 +47,7 @@ class SecurityCallbacks : public BLESecurityCallbacks {
 class RxCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* ch) override {
         if (!g_bleProtocol) return;
-        std::string val = ch->getValue();
+        String val = ch->getValue();
         if (val.length() > 0) {
             g_bleProtocol->_onWrite((const uint8_t*)val.c_str(), val.length());
         }

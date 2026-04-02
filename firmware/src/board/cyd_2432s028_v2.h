@@ -36,9 +36,9 @@ public:
             cfg.panel_height  = 320;
             cfg.offset_x      = 0;
             cfg.offset_y      = 0;
-            cfg.offset_rotation = 0;
+            cfg.offset_rotation = 2;   // Rotate 180° to match physical mounting
             cfg.readable      = true;
-            cfg.invert        = true;   // ST7789 needs invert
+            cfg.invert        = false;  // Invert colors (toggle from ST7789 default)
             cfg.rgb_order     = false;
             cfg.dlen_16bit    = false;
             cfg.bus_shared    = false;
@@ -61,7 +61,7 @@ public:
             cfg.y_max      = 3700;
             cfg.pin_int    = 36;
             cfg.bus_shared = false;
-            cfg.offset_rotation = 0;
+            cfg.offset_rotation = 2;   // Match panel 180° rotation
             cfg.spi_host   = VSPI_HOST;
             cfg.freq       = 1000000;
             cfg.pin_sclk   = 25;

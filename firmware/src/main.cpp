@@ -118,7 +118,13 @@ void setup() {
 
     // Hardware watchdog: reset the device if loop() stalls for more than 15 seconds.
     // This recovers from BLE stack hangs or display deadlocks without manual intervention.
-    esp_task_wdt_init(15, true);   // timeout_s=15, panic=true
+    // ESP-IDF v5 API: esp_task_wdt_init takes a config struct, not (timeout, panic).
+    const esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = 15000,
+        .idle_core_mask = 0,       // Don't watch idle tasks
+        .trigger_panic = true,
+    };
+    esp_task_wdt_init(&wdt_cfg);
     esp_task_wdt_add(NULL);        // Subscribe the current (loop) task
     Serial.println("Watchdog armed (15s timeout)");
 }
