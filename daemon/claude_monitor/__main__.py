@@ -77,6 +77,18 @@ def main() -> None:
         ota(config.ota_firmware, f"http://localhost:{config.http_port}")
         return
 
+    if config.subcommand == "device":
+        from .cli import device_forget, device_show
+
+        if config.device_subcommand == "show":
+            device_show()
+        elif config.device_subcommand == "forget":
+            device_forget()
+        else:
+            print("Usage: claude-monitor device [show|forget]", file=sys.stderr)
+            sys.exit(1)
+        return
+
     # Acquire a single-instance lock before doing anything else.
     # If another daemon process is already running this exits(0) immediately.
     acquire_lock()

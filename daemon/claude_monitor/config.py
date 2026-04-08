@@ -14,6 +14,8 @@ class Config:
     ota_firmware: str = ""
     # Set to a subcommand name if the user ran one (e.g. "status")
     subcommand: str = ""
+    # For the "device" subcommand: "show" or "forget"
+    device_subcommand: str = ""
 
     @classmethod
     def from_args(cls) -> "Config":
@@ -26,6 +28,12 @@ class Config:
         # `ota` subcommand
         ota_parser = sub.add_parser("ota", help="Push firmware update to ESP32 via BLE")
         ota_parser.add_argument("firmware", help="Path to firmware.bin file")
+
+        # `device` subcommand
+        device_parser = sub.add_parser("device", help="Manage the paired BLE display")
+        device_sub = device_parser.add_subparsers(dest="device_subcommand")
+        device_sub.add_parser("show", help="Show the paired device address")
+        device_sub.add_parser("forget", help="Clear pairing — next start will scan openly")
 
         # Daemon flags (used when no subcommand is given)
         parser.add_argument(
@@ -69,4 +77,5 @@ class Config:
             max_devices=args.devices,
             ota_firmware=getattr(args, "firmware", ""),
             subcommand=args.subcommand or "",
+            device_subcommand=getattr(args, "device_subcommand", "") or "",
         )
