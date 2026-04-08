@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
   release:
@@ -17,23 +16,105 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Determine version bump
+        id: version
+        run: |
+          # Get latest tag (fallback to v0.0.0 if none exist)
+          LATEST_TAG=$(git tag -l 'v*' --sort=-version:refname | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.0.0"
+          fi
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Python Semantic Release
-        id: release
-        uses: python-semantic-release/python-semantic-release@v9
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          changelog: "true"
-          # Don't commit or push to main — branch protection requires PRs.
-          # The GitHub Release API creates the tag on the remote, and
-          # hatch-vcs / git-describe derive versions from tags at build time,
-          # so no files on main need updating.
-          commit: "false"
-          push: "false"
-          tag: "true"
-          vcs_release: "true"
+          # Strip leading 'v' and split into parts
+          VERSION="${LATEST_TAG#v}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+          # Scan commits since last tag for conventional commit types
+          BUMP="none"
+          while IFS= read -r msg; do
+            if echo "$msg" | grep -qE '^feat(\(.+\))?!:|^fix(\(.+\))?!:|^[a-z]+(\(.+\))?!:|BREAKING CHANGE:'; then
+              BUMP="major"
+              break
+            elif echo "$msg" | grep -qE '^feat(\(.+\))?:'; then
+              BUMP="minor"
+              # Don't break — a later commit might be a breaking change
+            elif echo "$msg" | grep -qE '^(fix|perf)(\(.+\))?:'; then
+              if [ "$BUMP" != "minor" ]; then
+                BUMP="patch"
+              fi
+            fi
+          done < <(git log "$LATEST_TAG"..HEAD --format="%s")
+
+          if [ "$BUMP" = "none" ]; then
+            echo "No release-worthy commits since $LATEST_TAG"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Calculate next version
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEXT_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "next_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "Bump: $BUMP  $LATEST_TAG → $NEXT_VERSION"
+
+      - name: Generate release notes
+        id: notes
+        if: steps.version.outputs.release == 'true'
+        run: |
+          TAG="${{ steps.version.outputs.latest_tag }}"
+          {
+            echo "notes<<RELEASE_EOF"
+            echo "## What's Changed"
+            echo ""
+            # Group commits by type
+            for TYPE_LABEL in "feat:Features" "fix:Bug Fixes" "perf:Performance"; do
+              TYPE="${TYPE_LABEL%%:*}"
+              LABEL="${TYPE_LABEL##*:}"
+              COMMITS=$(git log "$TAG"..HEAD --format="%s" | grep -E "^${TYPE}(\(.+\))?:" || true)
+              if [ -n "$COMMITS" ]; then
+                echo "### $LABEL"
+                echo "$COMMITS" | while IFS= read -r msg; do
+                  # Strip the type prefix for cleaner display
+                  CLEAN=$(echo "$msg" | sed -E "s/^${TYPE}(\([^)]+\))?:\s*//")
+                  SCOPE=$(echo "$msg" | grep -oE "^${TYPE}\([^)]+\)" | grep -oE "\([^)]+\)" | tr -d '()' || true)
+                  if [ -n "$SCOPE" ]; then
+                    echo "- **${SCOPE}**: ${CLEAN}"
+                  else
+                    echo "- ${CLEAN}"
+                  fi
+                done
+                echo ""
+              fi
+            done
+            # Other commits
+            OTHER=$(git log "$TAG"..HEAD --format="%s" | grep -vE "^(feat|fix|perf)(\(.+\))?:" | grep -vE "^Merge " || true)
+            if [ -n "$OTHER" ]; then
+              echo "### Other Changes"
+              echo "$OTHER" | while IFS= read -r msg; do echo "- ${msg}"; done
+              echo ""
+            fi
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${TAG}...${{ steps.version.outputs.next_version }}"
+            echo "RELEASE_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.next_version }}" \
+            --target "${{ github.sha }}" \
+            --title "${{ steps.version.outputs.next_version }}" \
+            --notes "${{ steps.notes.outputs.notes }}"
+          echo "Created release ${{ steps.version.outputs.next_version }}"
