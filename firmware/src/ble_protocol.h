@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include "ota.h"
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -62,10 +63,15 @@ public:
     bool isPasskeyActive() const { return _passkeyActive; }
     uint32_t getPasskey() const { return _displayPasskey; }
 
+    // Owner binding — enforces that only the first computer to bond can reconnect.
+    bool hasOwner() const { return _hasOwner; }
+    void clearOwner();  // Erase NVS binding + BLE bonds; called on 5-second hold reset
+
     // Called by BLE callbacks (friend access)
     void _onConnect();
     void _onDisconnect();
     void _onWrite(const uint8_t* data, size_t length);
+    void _onAuthComplete(const uint8_t* addr);  // Called after bonding completes
 
     friend class SecurityCallbacks;
 
@@ -102,6 +108,15 @@ private:
     bool _otaMode = false;
     volatile bool _otaAckPending = false;  // Set by _onWrite, consumed by update()
     volatile bool _otaAckOk = false;
+
+    // Owner binding: set on first successful bond, persisted in NVS.
+    // Only the bonded peer's address is allowed to reconnect afterwards.
+    bool _hasOwner = false;
+    uint8_t _ownerAddr[6] = {0};
+    // Flags set by BLE callbacks (core 0), consumed by update() on core 1.
+    volatile bool _claimPending = false;   // New owner to be saved to NVS
+    volatile bool _kickPending = false;    // Non-owner connected — disconnect it
+    uint8_t _pendingOwnerAddr[6] = {0};    // Latched in callback, written in update()
 
     bool parseLine(const char* line);
     void sendJson(const char* json);

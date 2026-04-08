@@ -12,6 +12,8 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
+from .pairing import load_paired_address, save_paired_address
+
 log = logging.getLogger(__name__)
 
 # Must match the UUIDs in ble_protocol.h
@@ -143,20 +145,38 @@ class BleManager:
         it's detected.  Keeping the scanner running while we hand the device
         to BleakClient avoids the Windows WinRT cache miss that causes
         BleakDeviceNotFoundError or silent connection hangs.
+
+        If a paired device address has been saved (via pairing.py), only that
+        exact address is accepted — preventing the daemon from accidentally
+        connecting to a neighbour's Claude Monitor display.
         """
-        log.info("Scanning for Claude Monitor BLE display...")
+        paired_address = load_paired_address()
+        if paired_address:
+            log.info("Scanning for paired device %s...", paired_address)
+        else:
+            log.info("Scanning for any Claude Monitor BLE display...")
 
         found_event: asyncio.Event = asyncio.Event()
         found_device: BLEDevice | None = None
 
         def detection_callback(device: BLEDevice, adv: AdvertisementData) -> None:
             nonlocal found_device
-            # Match by service UUID (normal case) OR by device name (Windows paired
-            # devices often deliver an empty service_uuids list from the WinRT cache).
+
+            # If we know our device's address, only accept that one.
+            if paired_address:
+                if device.address.lower() != paired_address.lower():
+                    return
+                log.debug("Found paired device %s", device.address)
+                found_device = device
+                found_event.set()
+                return
+
+            # No saved address — match by service UUID or device name (first run /
+            # after a forget). Windows paired devices often return an empty
+            # service_uuids list from the WinRT cache, so we fall back to name.
             name = (device.name or adv.local_name or "").strip()
             uuid_match = SERVICE_UUID.lower() in [str(u).lower() for u in adv.service_uuids]
             name_match = name == "Claude Monitor"
-            # Log any named device so scan diagnostics are useful even at INFO level
             if name:
                 log.debug(
                     "Scan saw named device: %r (%s) uuid_match=%s",
@@ -286,6 +306,7 @@ class BleManager:
         self._client = client
         self._connected = True
         log.info("BLE connected to %s", device.address)
+        save_paired_address(device.address)
 
         try:
             log.info("BLE MTU: %d bytes", client.mtu_size)

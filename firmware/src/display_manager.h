@@ -16,6 +16,7 @@ public:
     void begin(LGFX* lcd);
     void update(uint32_t now, SessionStore* sessions, bool bleConnected);
     void drawPasskeyOverlay(uint32_t passkey);
+    void drawCentreMessage(const char* msg);  // Full-screen message (e.g. "PAIRING RESET")
 
 private:
     LGFX* _lcd = nullptr;

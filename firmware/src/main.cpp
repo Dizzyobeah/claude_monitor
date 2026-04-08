@@ -231,6 +231,26 @@ void loop() {
             protocol.sendDictate(sid);
         }
     }
+
+    // Pairing reset: hold for 5 seconds to clear owner binding and reboot.
+    // Fires only when an owner is set (prevents accidental reset on unclaimed devices).
+    // The normal 600ms long-press for dictate is unaffected — this requires a
+    // sustained hold well beyond that threshold.
+    {
+        static uint32_t clearHoldStart = 0;
+        if (touch.isLongPressActive()) {
+            if (clearHoldStart == 0) clearHoldStart = now;
+            if (now - clearHoldStart >= 5000 && protocol.hasOwner()) {
+                display.drawCentreMessage("PAIRING RESET");
+                protocol.clearOwner();
+                delay(1500);
+                ESP.restart();
+            }
+        } else {
+            clearHoldStart = 0;
+        }
+    }
+
     uint32_t t4 = millis();
     if (t4 - t3 > LOOP_WARN_MS) Serial.printf("[SLOW] Touch: %ums\n", t4 - t3);
 

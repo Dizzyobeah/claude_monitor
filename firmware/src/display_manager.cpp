@@ -336,6 +336,21 @@ void DisplayManager::drawPasskeyOverlay(uint32_t passkey) {
 }
 
 // ---------------------------------------------------------------------------
+// Centre message — full-screen text for critical events (e.g. pairing reset)
+// ---------------------------------------------------------------------------
+void DisplayManager::drawCentreMessage(const char* msg) {
+    _lcd->fillScreen(TFT_BLACK);
+    _lcd->setTextColor(TFT_WHITE);
+    _lcd->setTextSize(2);
+    _lcd->setTextDatum(lgfx::middle_center);
+    _lcd->drawString(msg, SCREEN_W / 2, SCREEN_H / 2);
+
+    // Force a full redraw next update cycle
+    _lastIdleScreen = IdleScreen::NONE;
+    _lastFooterState = SessionState::DISCONNECTED;
+}
+
+// ---------------------------------------------------------------------------
 // No sessions footer — static footer drawn once when entering the
 // no-sessions state.  The animation zone uses the normal IDLE character.
 // ---------------------------------------------------------------------------

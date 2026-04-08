@@ -1,4 +1,4 @@
-"""CLI subcommands for Claude Monitor (status, ota)."""
+"""CLI subcommands for Claude Monitor (status, ota, device)."""
 
 from __future__ import annotations
 
@@ -86,3 +86,27 @@ def ota(firmware_path: str, base_url: str = DEFAULT_URL) -> None:
     except TimeoutError:
         print("OTA timed out — BLE transfer may still be in progress.", file=sys.stderr)
         sys.exit(1)
+
+
+def device_show() -> None:
+    """Print the currently paired device address."""
+    from .pairing import load_paired_address
+
+    address = load_paired_address()
+    if address:
+        print(f"Paired device: {address}")
+    else:
+        print("Not paired — daemon will scan for any Claude Monitor display on next start.")
+
+
+def device_forget() -> None:
+    """Clear the saved pairing so the daemon scans openly on next start."""
+    from .pairing import forget_paired_address, load_paired_address
+
+    address = load_paired_address()
+    if not address:
+        print("No paired device saved — nothing to forget.")
+        return
+    forget_paired_address()
+    print(f"Pairing cleared (was: {address}).")
+    print("The daemon will scan for any Claude Monitor display on next start.")

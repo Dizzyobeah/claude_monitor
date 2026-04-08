@@ -40,6 +40,9 @@ class SecurityCallbacks : public BLESecurityCallbacks {
         if (g_bleProtocol) {
             g_bleProtocol->_passkeyActive = false;
             g_bleProtocol->_displayPasskey = 0;
+            if (cmpl.success) {
+                g_bleProtocol->_onAuthComplete(cmpl.bd_addr);
+            }
         }
     }
 };
@@ -89,6 +92,22 @@ bool stateNeedsAttention(SessionState state) {
 
 void BleProtocol::begin() {
     g_bleProtocol = this;
+
+    // Load owner binding from NVS before advertising
+    {
+        Preferences prefs;
+        prefs.begin("claude-mon", true);  // read-only
+        _hasOwner = prefs.getBool("owner_set", false);
+        if (_hasOwner) {
+            prefs.getBytes("owner_addr", _ownerAddr, 6);
+            Serial.printf("[BLE] Owner loaded: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                _ownerAddr[0], _ownerAddr[1], _ownerAddr[2],
+                _ownerAddr[3], _ownerAddr[4], _ownerAddr[5]);
+        } else {
+            Serial.println("[BLE] No owner — open to first bonder");
+        }
+        prefs.end();
+    }
 
     BLEDevice::init("Claude Monitor");
 
@@ -162,6 +181,28 @@ void BleProtocol::update() {
         hasData = true;
     }
     portEXIT_CRITICAL_SAFE(&_rxMux);
+
+    // Owner binding: save new owner to NVS (deferred from BLE callback).
+    if (_claimPending) {
+        _claimPending = false;
+        memcpy(_ownerAddr, _pendingOwnerAddr, 6);
+        _hasOwner = true;
+        Preferences prefs;
+        prefs.begin("claude-mon", false);
+        prefs.putBool("owner_set", true);
+        prefs.putBytes("owner_addr", _ownerAddr, 6);
+        prefs.end();
+        Serial.printf("[BLE] Owner claimed: %02X:%02X:%02X:%02X:%02X:%02X\n",
+            _ownerAddr[0], _ownerAddr[1], _ownerAddr[2],
+            _ownerAddr[3], _ownerAddr[4], _ownerAddr[5]);
+    }
+
+    // Owner binding: kick a non-owner that just connected.
+    if (_kickPending) {
+        _kickPending = false;
+        Serial.println("[BLE] Non-owner connection rejected");
+        if (_server) _server->disconnect(0);
+    }
 
     // Send OTA chunk ACK from the main thread (notify isn't safe from BLE callback).
     if (_otaAckPending) {
@@ -329,4 +370,44 @@ void BleProtocol::sendDictate(const char* sid) {
 
 void BleProtocol::sendReady() {
     sendJson("{\"cmd\":\"ready\"}");
+}
+
+void BleProtocol::_onAuthComplete(const uint8_t* addr) {
+    // Called from BLE callback (core 0) — only set flags, no blocking NVS or Serial calls.
+    if (!_hasOwner) {
+        // First successful bond: claim this peer as owner.
+        memcpy(_pendingOwnerAddr, addr, 6);
+        _claimPending = true;
+    } else if (memcmp(_ownerAddr, addr, 6) != 0) {
+        // Different peer — schedule a disconnect from the main thread.
+        _kickPending = true;
+    }
+    // Owner address matches: allowed, nothing to do.
+}
+
+void BleProtocol::clearOwner() {
+    _hasOwner = false;
+    _claimPending = false;
+    _kickPending = false;
+    memset(_ownerAddr, 0, 6);
+    memset(_pendingOwnerAddr, 0, 6);
+    Preferences prefs;
+    prefs.begin("claude-mon", false);
+    prefs.remove("owner_set");
+    prefs.remove("owner_addr");
+    prefs.end();
+    // Remove all BLE bonds via esp-idf GAP API (Arduino BLE lib has no wrapper)
+    int numBonded = esp_ble_get_bond_device_num();
+    if (numBonded > 0) {
+        esp_ble_bond_dev_t* devList = (esp_ble_bond_dev_t*)malloc(
+            sizeof(esp_ble_bond_dev_t) * numBonded);
+        if (devList) {
+            esp_ble_get_bond_device_list(&numBonded, devList);
+            for (int i = 0; i < numBonded; i++) {
+                esp_ble_remove_bond_device(devList[i].bd_addr);
+            }
+            free(devList);
+        }
+    }
+    Serial.println("[BLE] Owner cleared — open to new bonder after reboot");
 }
