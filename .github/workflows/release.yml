@@ -29,7 +29,11 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           changelog: "true"
-          commit: "true"
-          push: "true"
+          # Don't commit or push to main — branch protection requires PRs.
+          # The GitHub Release API creates the tag on the remote, and
+          # hatch-vcs / git-describe derive versions from tags at build time,
+          # so no files on main need updating.
+          commit: "false"
+          push: "false"
           tag: "true"
           vcs_release: "true"
