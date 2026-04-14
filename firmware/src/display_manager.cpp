@@ -61,14 +61,14 @@ void DisplayManager::update(uint32_t now, SessionStore* sessions, bool bleConnec
 
     // --- NOT CONNECTED: draw full-screen waiting screen only on transition ---
     if (!bleConnected) {
-        _idlePhase += elapsed;
+        // _idlePhase unused (BLE logo is static)
         if (_lastIdleScreen != IdleScreen::WAITING_BLE) {
             _lcd->fillScreen(Colors::BG_DARK);
             _lastIdleScreen = IdleScreen::WAITING_BLE;
             _lastFooterState = SessionState::DISCONNECTED;  // force footer redraw on reconnect
             _lastDisplayRank = 0xFF;
+            drawWaitingForBle();
         }
-        drawWaitingForBle();
         return;
     }
 
@@ -254,31 +254,20 @@ void DisplayManager::drawFooter(Session* session, uint8_t sessionCount, uint8_t 
 }
 
 // ---------------------------------------------------------------------------
-// Waiting for BLE — full-screen static content drawn once on transition,
-// then only the animated elements are redrawn each frame.
+// Waiting for BLE — drawn once on transition to this screen.
 // ---------------------------------------------------------------------------
 void DisplayManager::drawWaitingForBle() {
-    // Static text is drawn only once (on transition, when _lastIdleScreen changed).
-    // Here we only redraw the animated elements using _idlePhase.
-    uint8_t angle = (uint8_t)((_idlePhase * 256) / 2000);
-    int8_t pulse = isin(angle);
-    uint8_t bright = 100 + (pulse + 127) * 100 / 254;
+    uint8_t bright = 180;
     uint16_t bleColor = _lcd->color565(0, bright * 2 / 3, bright);
 
     int16_t bx = SCREEN_W / 2;
     int16_t by = SCREEN_H / 2;
     int16_t s = 3;
 
-    // Overdraw static text once more — only needed on the very first call after
-    // transition (subsequent calls just update the animated icon in-place, but
-    // since we don't have a sprite here we redraw the icon region each frame).
     _lcd->setTextColor(Colors::CLAUDE_ORANGE);
     _lcd->setTextSize(2);
     _lcd->setTextDatum(lgfx::middle_center);
     _lcd->drawString("Claude Monitor", SCREEN_W / 2, SCREEN_H / 2 - 60);
-
-    // Erase previous icon area before redrawing (avoids ghost pixels from last frame)
-    _lcd->fillRect(bx - 45, by - 45, 90, 90, Colors::BG_DARK);
 
     _lcd->drawLine(bx, by - 8*s, bx, by + 8*s, bleColor);
     _lcd->drawLine(bx, by - 8*s, bx + 5*s, by - 3*s, bleColor);
