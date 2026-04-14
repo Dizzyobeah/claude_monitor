@@ -30,45 +30,6 @@ static Preferences prefs;
 static ThemeId activeTheme = ThemeId::THEME_DEFAULT;
 static OtaManager ota;
 
-// Last time the RGB LED state was updated. Gated at 500ms to avoid hammering
-// digitalWrite on every loop() iteration (which can run thousands of times/sec).
-static uint32_t lastLedUpdate = 0;
-
-void updateLED(SessionState state) {
-    switch (state) {
-        case SessionState::IDLE:
-            digitalWrite(PIN_LED_R, HIGH);
-            digitalWrite(PIN_LED_G, HIGH);
-            digitalWrite(PIN_LED_B, LOW);   // Blue
-            break;
-        case SessionState::THINKING:
-            digitalWrite(PIN_LED_R, LOW);    // Orange (R+G)
-            digitalWrite(PIN_LED_G, LOW);
-            digitalWrite(PIN_LED_B, HIGH);
-            break;
-        case SessionState::TOOL_USE:
-            digitalWrite(PIN_LED_R, HIGH);
-            digitalWrite(PIN_LED_G, LOW);    // Green
-            digitalWrite(PIN_LED_B, HIGH);
-            break;
-        case SessionState::PERMISSION:
-        case SessionState::ERROR:
-            digitalWrite(PIN_LED_R, LOW);    // Red
-            digitalWrite(PIN_LED_G, HIGH);
-            digitalWrite(PIN_LED_B, HIGH);
-            break;
-        case SessionState::INPUT_NEEDED:
-            digitalWrite(PIN_LED_R, HIGH);
-            digitalWrite(PIN_LED_G, LOW);    // Cyan
-            digitalWrite(PIN_LED_B, LOW);
-            break;
-        default:
-            digitalWrite(PIN_LED_R, HIGH);   // Off
-            digitalWrite(PIN_LED_G, HIGH);
-            digitalWrite(PIN_LED_B, HIGH);
-            break;
-    }
-}
 
 void setup() {
     Serial.begin(115200);
@@ -103,14 +64,6 @@ void setup() {
 
     // Touch
     touch.begin(&lcd);
-
-    // RGB LED off
-    pinMode(PIN_LED_R, OUTPUT);
-    pinMode(PIN_LED_G, OUTPUT);
-    pinMode(PIN_LED_B, OUTPUT);
-    digitalWrite(PIN_LED_R, HIGH);
-    digitalWrite(PIN_LED_G, HIGH);
-    digitalWrite(PIN_LED_B, HIGH);
 
     // Start BLE (begins advertising immediately)
     protocol.setOtaManager(&ota);
@@ -254,31 +207,6 @@ void loop() {
     uint32_t t4 = millis();
     if (t4 - t3 > LOOP_WARN_MS) Serial.printf("[SLOW] Touch: %ums\n", t4 - t3);
 
-    // --- LED state ---
-    // Override LED to magenta during long-press hold for visual feedback
-    if (touch.isLongPressActive()) {
-        digitalWrite(PIN_LED_R, LOW);   // Magenta (R+B)
-        digitalWrite(PIN_LED_G, HIGH);
-        digitalWrite(PIN_LED_B, LOW);
-    } else
-    if (now - lastLedUpdate >= 500) {
-        lastLedUpdate = now;
-        Session* priority = sessions.getPriority();
-        Session* displayed = sessions.getDisplayed();
-        if (priority) {
-            updateLED(priority->state);
-        } else if (displayed) {
-            updateLED(displayed->state);
-        } else if (!protocol.isConnected()) {
-            static bool blinkState = false;
-            blinkState = !blinkState;
-            digitalWrite(PIN_LED_B, blinkState ? LOW : HIGH);
-            digitalWrite(PIN_LED_R, HIGH);
-            digitalWrite(PIN_LED_G, HIGH);
-        } else {
-            updateLED(SessionState::DISCONNECTED);
-        }
-    }
     uint32_t t5 = millis();
 
     // --- Render display ---
@@ -294,8 +222,8 @@ void loop() {
     // --- Total loop time ---
     uint32_t loopTime = t6 - loopStart;
     if (loopTime > LOOP_WARN_MS) {
-        Serial.printf("[SLOW] Loop total: %ums (ble=%u cmd=%u sess=%u touch=%u led=%u disp=%u)\n",
-                      loopTime, t1-t0, t2-t1, t3-t2, t4-t3, t5-t4, t6-t5);
+        Serial.printf("[SLOW] Loop total: %ums (ble=%u cmd=%u sess=%u touch=%u disp=%u)\n",
+                      loopTime, t1-t0, t2-t1, t3-t2, t4-t3, t6-t5);
     }
 
     // Periodic status report every 30 seconds

@@ -5,7 +5,7 @@ static constexpr uint32_t FRAME_INTERVAL_MS = 33; // ~30 FPS
 void DisplayManager::begin(LGFX* lcd) {
     _lcd = lcd;
     _lcd->init();
-    _lcd->setRotation(2);  // Portrait, 180° rotated
+    _lcd->setRotation(1);  // Landscape, 90° rotated
     _lcd->setBrightness(200);
     _lcd->fillScreen(Colors::BG_DARK);
 

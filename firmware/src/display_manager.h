@@ -8,8 +8,8 @@
 
 // Layout constants
 static constexpr int16_t HEADER_H  = 0;
-static constexpr int16_t ANIM_H    = 240;
-static constexpr int16_t FOOTER_H  = 80;  // SCREEN_H - ANIM_H
+static constexpr int16_t ANIM_H    = 180;
+static constexpr int16_t FOOTER_H  = 60;  // SCREEN_H - ANIM_H
 
 class DisplayManager {
 public:

@@ -86,5 +86,5 @@ static constexpr int PIN_LED_G = 16;
 static constexpr int PIN_LED_B = 17;
 
 // Display dimensions
-static constexpr int SCREEN_W = 240;
-static constexpr int SCREEN_H = 320;
+static constexpr int SCREEN_W = 320;
+static constexpr int SCREEN_H = 240;
