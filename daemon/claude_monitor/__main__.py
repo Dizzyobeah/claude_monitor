@@ -83,9 +83,9 @@ def main() -> None:
         if config.device_subcommand == "show":
             device_show()
         elif config.device_subcommand == "forget":
-            device_forget()
+            device_forget(config.device_forget_address or None)
         else:
-            print("Usage: claude-monitor device [show|forget]", file=sys.stderr)
+            print("Usage: claude-monitor device [show|forget [address]]", file=sys.stderr)
             sys.exit(1)
         return
 

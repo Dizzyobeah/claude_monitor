@@ -89,24 +89,48 @@ def ota(firmware_path: str, base_url: str = DEFAULT_URL) -> None:
 
 
 def device_show() -> None:
-    """Print the currently paired device address."""
-    from .pairing import load_paired_address
+    """Print the currently paired device addresses."""
+    from .pairing import load_paired_addresses
 
-    address = load_paired_address()
-    if address:
-        print(f"Paired device: {address}")
+    addresses = load_paired_addresses()
+    if addresses:
+        if len(addresses) == 1:
+            print(f"Paired device: {addresses[0]}")
+        else:
+            print(f"Paired devices ({len(addresses)}):")
+            for i, addr in enumerate(addresses, 1):
+                print(f"  {i}. {addr}")
     else:
         print("Not paired — daemon will scan for any Claude Monitor display on next start.")
 
 
-def device_forget() -> None:
-    """Clear the saved pairing so the daemon scans openly on next start."""
-    from .pairing import forget_paired_address, load_paired_address
+def device_forget(address: str | None = None) -> None:
+    """Remove a device from the paired list, or clear all if address is None.
 
-    address = load_paired_address()
-    if not address:
-        print("No paired device saved — nothing to forget.")
-        return
-    forget_paired_address()
-    print(f"Pairing cleared (was: {address}).")
-    print("The daemon will scan for any Claude Monitor display on next start.")
+    Args:
+        address: BLE address to remove. If None, removes all.
+    """
+    from .pairing import forget_paired_address, load_paired_addresses
+
+    if address:
+        # Remove specific address
+        addresses_before = load_paired_addresses()
+        forget_paired_address(address)
+        addresses_after = load_paired_addresses()
+        if len(addresses_before) > len(addresses_after):
+            print(f"Removed device {address}")
+            if addresses_after:
+                print(f"Remaining: {len(addresses_after)} device(s)")
+            else:
+                print("The daemon will scan for any Claude Monitor display on next start.")
+        else:
+            print(f"Device {address} not found in paired list.")
+    else:
+        # Clear all
+        addresses = load_paired_addresses()
+        if not addresses:
+            print("No paired devices saved — nothing to forget.")
+            return
+        forget_paired_address()
+        print(f"Cleared {len(addresses)} paired device(s).")
+        print("The daemon will scan for any Claude Monitor display on next start.")

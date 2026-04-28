@@ -12,7 +12,7 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
-from .pairing import load_paired_address, save_paired_address
+from .pairing import load_paired_addresses, save_paired_address
 
 log = logging.getLogger(__name__)
 
@@ -146,13 +146,13 @@ class BleManager:
         to BleakClient avoids the Windows WinRT cache miss that causes
         BleakDeviceNotFoundError or silent connection hangs.
 
-        If a paired device address has been saved (via pairing.py), only that
-        exact address is accepted — preventing the daemon from accidentally
+        If paired device addresses have been saved (via pairing.py), only those
+        exact addresses are accepted — preventing the daemon from accidentally
         connecting to a neighbour's Claude Monitor display.
         """
-        paired_address = load_paired_address()
-        if paired_address:
-            log.info("Scanning for paired device %s...", paired_address)
+        paired_addresses = load_paired_addresses()
+        if paired_addresses:
+            log.info("Scanning for %d known device(s)...", len(paired_addresses))
         else:
             log.info("Scanning for any Claude Monitor BLE display...")
 
@@ -162,16 +162,17 @@ class BleManager:
         def detection_callback(device: BLEDevice, adv: AdvertisementData) -> None:
             nonlocal found_device
 
-            # If we know our device's address, only accept that one.
-            if paired_address:
-                if device.address.lower() != paired_address.lower():
+            # If we know our device addresses, only accept those.
+            if paired_addresses:
+                device_addr_lower = device.address.lower()
+                if device_addr_lower not in {a.lower() for a in paired_addresses}:
                     return
                 log.debug("Found paired device %s", device.address)
                 found_device = device
                 found_event.set()
                 return
 
-            # No saved address — match by service UUID or device name (first run /
+            # No saved addresses — match by service UUID or device name (first run /
             # after a forget). Windows paired devices often return an empty
             # service_uuids list from the WinRT cache, so we fall back to name.
             name = (device.name or adv.local_name or "").strip()
