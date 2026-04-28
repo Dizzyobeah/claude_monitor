@@ -55,6 +55,34 @@ pio run -e cyd_cap -t upload        # Capacitive touch (CST820)
 
 Power on the display with any USB power source. It will show a pulsing Bluetooth icon while waiting for a connection.
 
+**Pairing a Device:**
+
+The pairing process is **automatic**. No PIN code or manual pairing step is required:
+
+1. Power on the ESP32 display (shows pulsing Bluetooth icon)
+2. Start or ensure the daemon is running:
+   ```bash
+   cd daemon
+   uv run claude-monitor status
+   ```
+   If the status says `BLE connected: no`, start the daemon:
+   ```bash
+   cd daemon
+   uv run claude-monitor
+   ```
+3. The daemon automatically scans for devices named "Claude Monitor" and connects within 30 seconds
+4. Once connected, the device's BLE address is saved automatically
+5. Verify pairing:
+   ```bash
+   uv run claude-monitor device show
+   ```
+
+If pairing fails:
+- Ensure the daemon is running: `uv run claude-monitor status`
+- Check the daemon log: `tail -f ~/.local/state/claude-monitor/daemon.log`
+- Power cycle the display (off/on) and try again
+- If still failing, reset pairing: `uv run claude-monitor device forget` and restart both the daemon and display
+
 #### OTA Firmware Updates
 
 After the initial USB flash, you can update the firmware wirelessly over BLE — no cable needed.
@@ -153,6 +181,32 @@ uv run claude-monitor --devices 2
 # Output logs as JSON for machine parsing
 uv run claude-monitor --json-log
 ```
+
+**Daemon Management:**
+
+```bash
+# Check if daemon is running
+uv run claude-monitor status
+
+# View daemon logs in real-time
+tail -f ~/.local/state/claude-monitor/daemon.log
+
+# Kill the daemon (gracefully stops all connections)
+pkill -f "uv run claude-monitor" || pkill -f "claude-monitor"
+
+# Restart the daemon (kill + start)
+pkill -f "uv run claude-monitor" || true
+sleep 1
+cd daemon && uv run claude-monitor &
+
+# Start daemon in the background (detached, survives terminal close)
+cd daemon && nohup uv run claude-monitor > ~/.local/state/claude-monitor/daemon.log 2>&1 &
+
+# View the daemon process
+ps aux | grep claude-monitor
+```
+
+The daemon starts automatically when you run Claude Code (via the hook script). If you manually kill it, it will auto-restart on the next hook event.
 
 ### 3. Verify the daemon is running
 
