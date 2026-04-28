@@ -16,6 +16,8 @@ class Config:
     subcommand: str = ""
     # For the "device" subcommand: "show" or "forget"
     device_subcommand: str = ""
+    # For the "device forget" subcommand: optional BLE address to remove
+    device_forget_address: str = ""
 
     @classmethod
     def from_args(cls) -> "Config":
@@ -30,10 +32,14 @@ class Config:
         ota_parser.add_argument("firmware", help="Path to firmware.bin file")
 
         # `device` subcommand
-        device_parser = sub.add_parser("device", help="Manage the paired BLE display")
+        device_parser = sub.add_parser("device", help="Manage paired BLE displays")
         device_sub = device_parser.add_subparsers(dest="device_subcommand")
-        device_sub.add_parser("show", help="Show the paired device address")
-        device_sub.add_parser("forget", help="Clear pairing — next start will scan openly")
+        device_sub.add_parser("show", help="Show paired device addresses")
+        forget_parser = device_sub.add_parser("forget", help="Remove a device or clear all")
+        forget_parser.add_argument(
+            "address", nargs="?", default=None,
+            help="BLE address to remove (omit to forget all)"
+        )
 
         # Daemon flags (used when no subcommand is given)
         parser.add_argument(
@@ -78,4 +84,5 @@ class Config:
             ota_firmware=getattr(args, "firmware", ""),
             subcommand=args.subcommand or "",
             device_subcommand=getattr(args, "device_subcommand", "") or "",
+            device_forget_address=getattr(args, "address", None) or "",
         )
