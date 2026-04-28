@@ -354,6 +354,44 @@ Packaged as a Claude Code plugin (`.claude-plugin/plugin.json`). A single bash s
 - Ensure you built the firmware with the correct board variant
 - Check daemon log for error details
 
+**Daemon is stuck or hung (not responding to commands):**
+1. Kill the daemon process:
+   ```bash
+   pkill -f "uv run claude-monitor" || pkill -f "claude-monitor"
+   ```
+2. Wait a moment for cleanup:
+   ```bash
+   sleep 2
+   ```
+3. Verify it's dead:
+   ```bash
+   ps aux | grep claude-monitor
+   ```
+   Should show no results (or only the grep command itself)
+4. Clear any stale lock file:
+   ```bash
+   rm -f ~/.local/state/claude-monitor/daemon.lock
+   ```
+5. Start the daemon again:
+   ```bash
+   cd daemon
+   uv run claude-monitor
+   ```
+   Or in the background:
+   ```bash
+   cd daemon
+   nohup uv run claude-monitor > ~/.local/state/claude-monitor/daemon.log 2>&1 &
+   ```
+6. Verify it started:
+   ```bash
+   uv run claude-monitor status
+   ```
+
+If the daemon keeps getting stuck, check the logs for errors:
+```bash
+tail -100 ~/.local/state/claude-monitor/daemon.log
+```
+
 ## Uninstall
 
 ```bash
